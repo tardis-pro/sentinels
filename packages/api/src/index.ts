@@ -8,6 +8,7 @@ import {
   createTables,
   getProjectById,
   getScanById,
+  getFindingsByScanId,
   listFindings,
   listProjects,
   listScanRuns,
@@ -108,6 +109,13 @@ fastify.get('/scans/:id/runs', async (request, reply) => {
 fastify.get('/findings', async (request, reply) => {
   const { severity, type } = request.query as { severity?: string; type?: string };
   const rows = await listFindings(severity, type);
+  reply.send(rows);
+});
+
+// Get findings by scan ID
+fastify.get('/scans/:id/findings', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const rows = await getFindingsByScanId(id);
   reply.send(rows);
 });
 

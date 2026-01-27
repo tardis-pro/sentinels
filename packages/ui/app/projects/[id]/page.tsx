@@ -88,40 +88,28 @@ export default function ProjectDetails({ params }: PageProps) {
 
   const fetchProjectData = useCallback(async () => {
     try {
-      // 1. Fetch Project Details (This endpoint wasn't explicitly created in list, but assuming we can filter or reuse list for now. 
-      // Actually the API only has list all. Let's just fetch all and find one for prototype speed, or assume we add get-one later.)
-      // For now, I'll fetch all and filter.
-      const res = await fetch(`${API_URL}/projects`);
-      const projects = await res.json();
-      const current = projects.find((p: any) => p.id === params.id);
+      // 1. Fetch Project Details
+      const res = await fetch(`${API_URL}/projects/${params.id}`);
+      const current = await res.json();
       setProject(current);
 
-      // 2. Fetch Scans (Ideally filtered by project, but our API is simple. We need to add query params or filter client side)
-      // The API currently has /scans/:id for single scan. We need list by project.
-      // I'll skip listing *all* scans for now and just focus on the active/latest one if we had a proper endpoint.
-      // Wait, the design doc had /scans/:id. 
-      // Let's implement a poller for the active scan if we trigger one.
-      
+      // 2. Fetch Scans for this project
       const scansRes = await fetch(`${API_URL}/projects/${params.id}/scans`);
       const history = await scansRes.json();
       setScans(history);
 
-      // For findings, we have /findings?severity=...
-      // We really need /findings?projectId=... or /scans/:id/findings. 
-      // I'll assume for this prototype we fetch global findings and filter client side (Not performant but works for demo).
-      const findingsRes = await fetch(`${API_URL}/findings`);
-      const allFindings = await findingsRes.json();
-      // We can't easily filter findings by project without a join in backend.
-      // Let's blindly show all findings for now, or just findings from the *scans* we know belong to this project.
-      // Actually, let's just show all findings as a "Global View" for this MVP if project specific is hard.
-      // BUT, let's try to be better. The findings table has scan_id. 
-      // So if we track scan IDs we can filter findings.
-      setFindings(allFindings.filter((f: any) => f.scan_id === activeScanId)); 
-      
+      // 3. Fetch findings for the most recent scan if available
+      if (history.length > 0) {
+        const latestScanId = history[0].id;
+        const findingsRes = await fetch(`${API_URL}/scans/${latestScanId}/findings`);
+        const scanFindings = await findingsRes.json();
+        setFindings(scanFindings);
+      }
+       
     } catch (e) {
       console.error(e);
     }
-  }, [params.id, activeScanId]);
+  }, [params.id]);
 
   useEffect(() => {
     fetchProjectData();
@@ -138,10 +126,10 @@ export default function ProjectDetails({ params }: PageProps) {
           const scan = await res.json();
           if (scan.status === 'completed' || scan.status === 'failed') {
             setIsScanning(false);
-            // Fetch findings for this scan
-            const fRes = await fetch(`${API_URL}/findings`); // Inefficient, but stick to plan
-            const allF = await fRes.json();
-            setFindings(allF.filter((f: any) => f.scan_id === activeScanId));
+            // Fetch findings for this scan using the dedicated endpoint
+            const fRes = await fetch(`${API_URL}/scans/${activeScanId}/findings`);
+            const scanFindings = await fRes.json();
+            setFindings(scanFindings);
             clearInterval(interval);
           }
         }
@@ -274,11 +262,11 @@ export default function ProjectDetails({ params }: PageProps) {
                   )}
                   onClick={() => {
                     setActiveScanId(scan.id);
-                    // Fetch findings for this scan
-                    fetch(`${API_URL}/findings`)
+                    // Fetch findings for this scan using the dedicated endpoint
+                    fetch(`${API_URL}/scans/${scan.id}/findings`)
                       .then(res => res.json())
-                      .then(allFindings => {
-                        setFindings(allFindings.filter((f: any) => f.scan_id === scan.id));
+                      .then(scanFindings => {
+                        setFindings(scanFindings);
                       });
                   }}
                 >

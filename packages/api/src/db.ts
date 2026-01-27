@@ -205,6 +205,14 @@ export async function listFindings(severity?: string, scannerName?: string) {
   return result.rows;
 }
 
+export async function getFindingsByScanId(scanId: string) {
+  const result = await client.query(
+    'SELECT * FROM findings WHERE scan_id = $1 ORDER BY created_at DESC',
+    [scanId]
+  );
+  return result.rows;
+}
+
 export async function updateScanStatus(
   scanId: string,
   status: ScanStatus,
