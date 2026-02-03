@@ -15,6 +15,8 @@ import {
   listScanRunsByScanIds,
   listScansByProject,
 } from './db';
+import { aiRoutes } from './ai/routes';
+import { createAITables } from './ai/db';
 import { scannerQueue } from './queue';
 import { SupportedScanner } from './parsers';
 
@@ -119,11 +121,14 @@ fastify.get('/scans/:id/findings', async (request, reply) => {
   reply.send(rows);
 });
 
+// Register AI routes
+fastify.register(aiRoutes);
 
-const start = async () => {
+async function start() {
   try {
     await connectDb();
     await createTables();
+    await createAITables(); // Create AI-specific tables
     await fastify.listen({ port: 4000, host: '0.0.0.0' });
     console.log(`API listening on http://0.0.0.0:4000`);
   } catch (err) {
