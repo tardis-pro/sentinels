@@ -18,6 +18,7 @@ import {
 import { scannerQueue } from './queue';
 import { SupportedScanner } from './parsers';
 import { analyticsRoutes } from './analytics';
+import { webhookRoutes } from './webhooks';
 
 const fastify = Fastify({
   logger: true,
@@ -29,6 +30,9 @@ fastify.register(cors, {
 
 // Register analytics routes
 fastify.register(analyticsRoutes);
+
+// Register webhook routes
+fastify.register(webhookRoutes);
 
 // Register new codebase
 fastify.post('/projects', async (request, reply) => {
