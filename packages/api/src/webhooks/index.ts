@@ -51,3 +51,7 @@ export function createGitProviderClient(config: GitProviderConfig): GitProviderC
       throw new Error(`Unsupported git provider: ${config.provider}`);
   }
 }
+
+// Webhook routes for receiving webhooks from Git providers
+export { webhookRoutes } from './routes';
+export * from './service';

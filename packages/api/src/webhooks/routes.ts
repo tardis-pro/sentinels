@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createGitProviderClient } from './index';
 import { 
   createWebhookConfig, 
@@ -13,7 +13,16 @@ import {
   getGitProviderConfig,
   decryptSecret,
   encryptSecret,
-} from './db';
+  processGitHubWebhook,
+  deliverWebhook,
+  listWebhookConfigs,
+  getWebhookConfig,
+  verifyGitHubSignature,
+  recordGitHubInstallation,
+  linkRepository,
+  getInstallationRepos,
+  connectWebhooksDb,
+} from './service';
 import { WebhookDelivery, ScanTrigger } from './types';
 import { scannerQueue } from '../queue';
 import { getProjectById, createScan, createScanRun } from '../db';
@@ -61,54 +70,224 @@ function isValidApiUrl(url: string): boolean {
   }
 }
 
+interface GitHubWebhookHeaders {
+  'x-github-event': string;
+  'x-github-delivery': string;
+  'x-hub-signature-256'?: string;
+  'x-github-hook-installation-target-id'?: string;
+  'content-type': string;
+}
+
 export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
-  // Webhook configuration endpoints
+  // Ensure database connection
+  fastify.addHook('onReady', async () => {
+    await connectWebhooksDb();
+  });
+
+  // ============================================
+  // INBOUND WEBHOOK ENDPOINTS (PR #14)
+  // ============================================
+
+  // GitHub App webhook receiver
+  fastify.post<{
+    Headers: GitHubWebhookHeaders;
+    Body: Record<string, any>;
+  }>('/webhooks/github', async (request: FastifyRequest<{ Headers: GitHubWebhookHeaders; Body: Record<string, any> }>, reply) => {
+    try {
+      const { 'x-github-event': eventType, 'x-github-delivery': deliveryId, 'x-hub-signature-256': signature } = request.headers;
+
+      if (!eventType || !deliveryId) {
+        return reply.status(400).send({ error: 'Missing required headers: x-github-event, x-github-delivery' });
+      }
+
+      // Get installation ID if present
+      const installationId = request.headers['x-github-hook-installation-target-id'] || 'app';
+
+      // Verify signature if webhook secret is configured
+      const rawBody = JSON.stringify(request.body);
+      const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET || 'development_secret';
+
+      if (signature) {
+        const isValid = verifyGitHubSignature(rawBody, signature, webhookSecret);
+        if (!isValid) {
+          fastify.log.warn('Invalid webhook signature');
+          return reply.status(401).send({ error: 'Invalid signature' });
+        }
+      }
+
+      const result = await processGitHubWebhook(
+        installationId,
+        deliveryId,
+        eventType,
+        request.body,
+        request.headers as Record<string, string>
+      );
+
+      if (!result.success) {
+        fastify.log.error(`Webhook processing failed: ${result.error}`);
+        return reply.status(500).send({ error: result.error });
+      }
+
+      // Return 202 Accepted for async processing
+      return reply.status(202).send({ received: true, eventId: result.eventId });
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Webhook processing failed' });
+    }
+  });
+
+  // Generic webhook receiver (for testing/custom integrations)
+  fastify.post<{
+    Body: {
+      provider: string;
+      eventType: string;
+      deliveryId: string;
+      payload: Record<string, any>;
+      signature?: string;
+      secret?: string;
+    };
+  }>('/webhooks/generic', async (request, reply) => {
+    try {
+      const { provider, eventType, deliveryId, payload, signature, secret } = request.body;
+
+      if (!provider || !eventType || !deliveryId || !payload) {
+        return reply.status(400).send({ error: 'Missing required fields' });
+      }
+
+      // Store event in generic format
+      const result = await processGitHubWebhook(
+        'generic',
+        deliveryId,
+        `${provider}:${eventType}`,
+        payload,
+        { 'x-signature': signature || '' }
+      );
+
+      return reply.status(202).send({ received: true, eventId: result.eventId });
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Webhook processing failed' });
+    }
+  });
+
+  // ============================================
+  // OUTBOUND WEBHOOK MANAGEMENT (PR #14)
+  // ============================================
+
+  // List all webhook configurations
+  fastify.get('/webhooks', async (request, reply) => {
+    try {
+      const webhooks = await listWebhookConfigs();
+      return webhooks.map(wh => ({
+        ...wh,
+        secret: wh.secret ? '***hidden***' : null,
+      }));
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to list webhooks' });
+    }
+  });
+
+  // Create new webhook configuration
   fastify.post('/webhooks', async (request, reply) => {
-    const body = request.body as { projectId?: string; provider?: string; events?: string[]; url?: string; secret?: string };
-    const { projectId, provider, events, url, secret } = body;
+    try {
+      const body = request.body as { name?: string; endpointUrl?: string; eventTypes?: string[]; description?: string; secret?: string };
+      const { name, endpointUrl, eventTypes, description, secret } = body;
 
-    if (!projectId || !provider || !url) {
-      reply.status(400).send({ error: 'Missing required fields' });
-      return;
+      if (!name || !endpointUrl || !eventTypes || eventTypes.length === 0) {
+        return reply.status(400).send({ error: 'Missing required fields: name, endpointUrl, eventTypes' });
+      }
+
+      const id = await createWebhookConfig(name, endpointUrl, eventTypes, 'system', {
+        description,
+        secret,
+      });
+
+      return reply.status(201).send({ id });
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to create webhook' });
     }
-
-    const webhook = await createWebhookConfig({
-      projectId,
-      provider,
-      events: events || ['push', 'pull_request'],
-      url,
-      secret: secret || crypto.randomUUID(),
-    });
-
-    reply.status(201).send(webhook);
   });
 
-  fastify.get('/projects/:id/webhooks', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const webhooks = await getWebhookConfigs(id);
-    reply.send(webhooks);
-  });
-
-  fastify.patch('/webhooks/:id', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const updates = request.body as Partial<{ events: string[]; url: string; enabled: boolean; secret: string }>;
-    const webhook = await updateWebhookConfig(id, updates);
-    
-    if (!webhook) {
-      reply.status(404).send({ error: 'Webhook not found' });
-      return;
+  // Get webhook configuration
+  fastify.get<{ Params: { id: string } }>('/webhooks/:id', async (request, reply) => {
+    try {
+      const webhook = await getWebhookConfig(request.params.id);
+      if (!webhook) {
+        return reply.status(404).send({ error: 'Webhook not found' });
+      }
+      return {
+        ...webhook,
+        secret: webhook.secret ? '***hidden***' : null,
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to get webhook' });
     }
-    
-    reply.send(webhook);
   });
 
-  fastify.delete('/webhooks/:id', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    await deleteWebhookConfig(id);
-    reply.status(204).send();
+  // Update webhook configuration
+  fastify.patch<{ Params: { id: string } }>('/webhooks/:id', async (request, reply) => {
+    try {
+      const updates = request.body as Record<string, any>;
+      const success = await updateWebhookConfig(request.params.id, updates);
+      if (!success) {
+        return reply.status(404).send({ error: 'Webhook not found' });
+      }
+      return { success: true };
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to update webhook' });
+    }
   });
 
-  // Git provider configuration
+  // Delete webhook configuration
+  fastify.delete<{ Params: { id: string } }>('/webhooks/:id', async (request, reply) => {
+    try {
+      const success = await deleteWebhookConfig(request.params.id);
+      if (!success) {
+        return reply.status(404).send({ error: 'Webhook not found' });
+      }
+      return { success: true };
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to delete webhook' });
+    }
+  });
+
+  // Test webhook delivery
+  fastify.post<{ Params: { id: string }; Body: { eventType?: string; testPayload?: Record<string, any> } }>(
+    '/webhooks/:id/test',
+    async (request, reply) => {
+      try {
+        const { eventType = 'test', testPayload = { message: 'Test webhook from Sentinel', timestamp: new Date().toISOString() } } = request.body;
+
+        const result = await deliverWebhook(request.params.id, eventType, testPayload);
+        return result;
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Failed to test webhook' });
+      }
+    }
+  );
+
+  // Get delivery statistics
+  fastify.get('/webhooks/stats', async (request, reply) => {
+    try {
+      const { getDeliveryStats } = await import('./service');
+      const stats = await getDeliveryStats();
+      return stats;
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to get stats' });
+    }
+  });
+
+  // ============================================
+  // GIT PROVIDER CONFIGURATION (PR #17)
+  // ============================================
+
   fastify.post('/git/providers', async (request, reply) => {
     const body = request.body as { projectId?: string; provider?: string; apiUrl?: string; token?: string; webhookSecret?: string };
     const { projectId, provider, apiUrl, token, webhookSecret } = body;
@@ -140,7 +319,10 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     reply.send(config ? { configured: true, provider: config.provider } : { configured: false });
   });
 
-  // Scan trigger management
+  // ============================================
+  // SCAN TRIGGER MANAGEMENT (PR #17)
+  // ============================================
+
   fastify.get('/scan-triggers', async (request, reply) => {
     const { projectId, status } = request.query as { projectId?: string; status?: string };
     const triggers = await getPendingTriggers(projectId);

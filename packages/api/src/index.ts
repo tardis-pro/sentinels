@@ -15,8 +15,13 @@ import {
   listScanRunsByScanIds,
   listScansByProject,
 } from './db';
+import { aiRoutes } from './ai/routes';
+import { createAITables } from './ai/db';
 import { scannerQueue } from './queue';
 import { SupportedScanner } from './parsers';
+import { policyRoutes } from './policies';
+import { analyticsRoutes } from './analytics';
+import { webhookRoutes } from './webhooks';
 
 const fastify = Fastify({
   logger: true,
@@ -25,6 +30,15 @@ const fastify = Fastify({
 fastify.register(cors, {
   origin: true, // Allow all origins for this local-first tool
 });
+
+// Register policy routes
+fastify.register(policyRoutes);
+
+// Register analytics routes
+fastify.register(analyticsRoutes);
+
+// Register webhook routes
+fastify.register(webhookRoutes);
 
 // Register new codebase
 fastify.post('/projects', async (request, reply) => {
@@ -119,11 +133,14 @@ fastify.get('/scans/:id/findings', async (request, reply) => {
   reply.send(rows);
 });
 
+// Register AI routes
+fastify.register(aiRoutes);
 
-const start = async () => {
+async function start() {
   try {
     await connectDb();
     await createTables();
+    await createAITables(); // Create AI-specific tables
     await fastify.listen({ port: 4000, host: '0.0.0.0' });
     console.log(`API listening on http://0.0.0.0:4000`);
   } catch (err) {
