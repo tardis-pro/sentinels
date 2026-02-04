@@ -17,6 +17,7 @@ import {
 } from './db';
 import { scannerQueue } from './queue';
 import { SupportedScanner } from './parsers';
+import { policyRoutes } from './policies';
 import { analyticsRoutes } from './analytics';
 import { webhookRoutes } from './webhooks';
 
@@ -27,6 +28,9 @@ const fastify = Fastify({
 fastify.register(cors, {
   origin: true, // Allow all origins for this local-first tool
 });
+
+// Register policy routes
+fastify.register(policyRoutes);
 
 // Register analytics routes
 fastify.register(analyticsRoutes);
