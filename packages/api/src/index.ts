@@ -17,6 +17,7 @@ import {
 } from './db';
 import { scannerQueue } from './queue';
 import { SupportedScanner } from './parsers';
+import { analyticsRoutes } from './analytics';
 
 const fastify = Fastify({
   logger: true,
@@ -25,6 +26,9 @@ const fastify = Fastify({
 fastify.register(cors, {
   origin: true, // Allow all origins for this local-first tool
 });
+
+// Register analytics routes
+fastify.register(analyticsRoutes);
 
 // Register new codebase
 fastify.post('/projects', async (request, reply) => {
