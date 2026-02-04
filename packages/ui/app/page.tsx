@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Plus, Shield, ChevronRight } from 'lucide-react';
+import { Plus, Shield, ChevronRight, BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Project {
@@ -63,13 +63,22 @@ export default function Dashboard() {
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-indigo-900">Sentinel</h1>
         </div>
-        <button
-          onClick={() => setIsCreating(!isCreating)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          Add Project
-        </button>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/analytics"
+            className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors"
+          >
+            <BarChart3 className="w-4 h-4" />
+            Analytics
+          </Link>
+          <button
+            onClick={() => setIsCreating(!isCreating)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Add Project
+          </button>
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto">
