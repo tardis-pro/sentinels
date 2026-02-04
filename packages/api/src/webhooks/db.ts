@@ -1,6 +1,32 @@
+import crypto from 'crypto';
 import { client, connectDb } from '../db';
-import { WebhookConfig, WebhookDelivery, ScanTrigger } from './types';
+import { WebhookConfig, WebhookDelivery, ScanTrigger, GitProviderConfig } from './types';
 import { createGitProviderClient } from './index';
+
+// Simple encryption for secrets
+const ENCRYPTION_KEY = process.env.SENTINEL_ENCRYPTION_KEY || 'default-key-32-bytes-long!!';
+const IV_LENGTH = 16;
+
+export function encryptSecret(text: string): string {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY.padEnd(32)), iv);
+  let encrypted = cipher.update(text, 'utf8');
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+export function decryptSecret(text: string): string {
+  const parts = text.split(':');
+  const iv = Buffer.from(parts[0], 'hex');
+  const authTag = Buffer.from(parts[1], 'hex');
+  const encrypted = Buffer.from(parts[2], 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY.padEnd(32)), iv);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(encrypted);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString('utf8');
+}
 
 // Database tables for webhook functionality
 export async function createWebhookTables(): Promise<void> {
@@ -217,11 +243,12 @@ export async function logWebhookDelivery(params: {
   responseCode?: number;
   responseBody?: string;
 }): Promise<void> {
+  // Use a unique constraint on (webhook_id, event, created_at) for deduplication
   await client.query(
     `INSERT INTO webhook_deliveries 
       (webhook_id, event, payload, status, response_code, response_body, attempts)
      VALUES ($1, $2, $3, $4, $5, $6, 1)
-     ON CONFLICT (id) DO NOTHING`,
+     ON CONFLICT DO NOTHING`,
     [
       params.webhookId,
       params.event,
@@ -241,16 +268,19 @@ export async function saveGitProviderConfig(params: {
   token: string;
   webhookSecret?: string;
 }): Promise<void> {
+  // Encrypt sensitive data before storage
+  const encryptedToken = encryptSecret(params.token);
+  const encryptedWebhookSecret = params.webhookSecret ? encryptSecret(params.webhookSecret) : null;
+  
   await client.query(
     `INSERT INTO git_provider_configs (project_id, provider, api_url, token_encrypted, webhook_secret)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (id) DO UPDATE SET
-      provider = EXCLUDED.provider,
+     ON CONFLICT (project_id, provider) DO UPDATE SET
       api_url = EXCLUDED.api_url,
       token_encrypted = EXCLUDED.token_encrypted,
       webhook_secret = EXCLUDED.webhook_secret,
       updated_at = NOW()`,
-    [params.projectId, params.provider, params.apiUrl, params.token, params.webhookSecret]
+    [params.projectId, params.provider, params.apiUrl, encryptedToken, encryptedWebhookSecret]
   );
 }
 

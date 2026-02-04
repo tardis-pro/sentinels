@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { GitProviderClient, CommitStatus, PRComment } from '../index';
 import { GitProviderConfig } from '../types';
 
@@ -37,7 +38,7 @@ export class GitLabClient implements GitProviderClient {
   }
 
   async createPRComment(comment: PRComment): Promise<void> {
-    const [projectPath, ] = this.parseRef(comment.commitSha);
+    const [projectPath] = this.parseRef(comment.commitSha);
     
     const response = await fetch(
       `${this.baseUrl}/projects/${encodeURIComponent(projectPath)}/merge_requests/${comment.prNumber}/notes`,
@@ -59,7 +60,8 @@ export class GitLabClient implements GitProviderClient {
   }
 
   async updatePRComment(prNumber: number, commentId: string, body: string): Promise<void> {
-    const [projectPath, ] = this.parseRef('');
+    // Get project path from config - required for GitLab operations
+    const projectPath = this.getProjectPath();
     
     const response = await fetch(
       `${this.baseUrl}/projects/${encodeURIComponent(projectPath)}/merge_requests/${prNumber}/notes/${commentId}`,
@@ -93,11 +95,20 @@ export class GitLabClient implements GitProviderClient {
     const branch = payload.ref?.replace('refs/heads/', '');
     const commitSha = payload.after;
     
+    // Extract changed files from commits array
     const changes = {
-      added: payload.project?.default_branch === branch ? [] : [],
-      modified: [],
-      removed: [],
+      added: [] as string[],
+      modified: [] as string[],
+      removed: [] as string[],
     };
+    
+    if (payload.commits && Array.isArray(payload.commits)) {
+      for (const commit of payload.commits) {
+        if (commit.added) changes.added.push(...commit.added);
+        if (commit.modified) changes.modified.push(...commit.modified);
+        if (commit.removed) changes.removed.push(...commit.removed);
+      }
+    }
 
     return { repository: repo, branch, commitSha, changes };
   }
@@ -118,6 +129,74 @@ export class GitLabClient implements GitProviderClient {
       branch: mr.source_branch,
       baseBranch: mr.target_branch,
       author: mr.author?.username,
+    };
+  }
+
+  async getFileContent(repo: string, path: string, ref: string): Promise<string> {
+    const response = await fetch(
+      `${this.baseUrl}/projects/${encodeURIComponent(repo)}/repository/files/${encodeURIComponent(path)}?ref=${ref}`,
+      {
+        headers: {
+          'PRIVATE-TOKEN': this.config.token,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to get file: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return Buffer.from(data.content, 'base64').toString('utf8');
+  }
+
+  async getCommit(repo: string, sha: string): Promise<any> {
+    const response = await fetch(
+      `${this.baseUrl}/projects/${encodeURIComponent(repo)}/commits/${sha}`,
+      {
+        headers: {
+          'PRIVATE-TOKEN': this.config.token,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to get commit: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  private parseRef(ref: string): [string, string] {
+    // Extract project path and commit SHA from ref or context
+    // For commits: use the SHA directly
+    if (ref && ref.length >= 7 && !ref.includes('/')) {
+      const projectPath = this.getProjectPath();
+      return [projectPath, ref];
+    }
+    // For refs: project_path@sha
+    const parts = ref.split('@');
+    return [parts[0], parts[1] || ''];
+  }
+
+  private getProjectPath(): string {
+    // Project path should come from config
+    if (this.config.projectPath) {
+      return this.config.projectPath;
+    }
+    throw new Error('GitLab project path must be configured');
+  }
+
+  private mapStatus(state: string): string {
+    const statusMap: Record<string, string> = {
+      pending: 'pending',
+      success: 'success',
+      failure: 'failed',
+      error: 'failed',
+    };
+    return statusMap[state] || 'pending';
+  }
+}
     };
   }
 

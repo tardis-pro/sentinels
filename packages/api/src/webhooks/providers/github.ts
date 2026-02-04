@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { GitProviderClient, CommitStatus, PRComment } from '../index';
 import { GitProviderConfig } from '../types';
 
@@ -14,8 +15,9 @@ export class GitHubClient implements GitProviderClient {
   }
 
   async setCommitStatus(status: CommitStatus): Promise<void> {
+    const [owner, repo] = this.getOwnerRepo();
     const response = await fetch(
-      `${this.baseUrl}/repos/${this.config.token.split('/')[0]}/${this.config.token.split('/')[1]}/statuses/${status.sha}`,
+      `${this.baseUrl}/repos/${owner}/${repo}/statuses/${status.sha}`,
       {
         method: 'POST',
         headers: {
@@ -162,7 +164,13 @@ export class GitHubClient implements GitProviderClient {
   }
 
   private getOwnerRepo(): [string, string] {
-    const parts = this.config.token.split('/');
-    return [parts[0], parts[1]];
+    // Owner and repo should come from config, not derived from token
+    // The config should have owner and repo fields for proper operation
+    if (this.config.owner && this.config.repo) {
+      return [this.config.owner, this.config.repo];
+    }
+    // Fallback: try to extract from repository info in config
+    // This is a workaround for existing configurations
+    throw new Error('GitHub owner and repo must be configured');
   }
 }

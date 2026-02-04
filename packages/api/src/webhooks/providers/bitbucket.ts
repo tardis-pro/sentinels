@@ -100,11 +100,27 @@ export class BitbucketClient implements GitProviderClient {
     const branch = payload.push?.changes?.[0]?.new?.name;
     const commitSha = payload.push?.changes?.[0]?.new?.target?.hash;
     
+    // Extract changed files from commits
+    const changes = {
+      added: [] as string[],
+      modified: [] as string[],
+      removed: [] as string[],
+    };
+    
+    const changesObj = payload.push?.changes?.[0];
+    if (changesObj?.commits && Array.isArray(changesObj.commits)) {
+      for (const commit of changesObj.commits) {
+        if (commit.added) changes.added.push(...commit.added);
+        if (commit.modified) changes.modified.push(...commit.modified);
+        if (commit.removed) changes.removed.push(...commit.removed);
+      }
+    }
+    
     return { 
       repository: repo, 
       branch, 
       commitSha, 
-      changes: { added: [], modified: [], removed: [] } 
+      changes
     };
   }
 
@@ -117,14 +133,28 @@ export class BitbucketClient implements GitProviderClient {
     author: string;
   } {
     const pr = payload.pullrequest;
+    const action = this.mapPREventAction(payload.action, pr.state);
     return {
-      action: pr.state === 'OPEN' ? 'opened' : 'closed',
+      action,
       prNumber: pr.id,
       title: pr.title,
       branch: pr.source?.branch?.name,
       baseBranch: pr.destination?.branch?.name,
       author: pr.author?.display_name,
     };
+  }
+
+  private mapPREventAction(action: string, state: string): 'opened' | 'synchronize' | 'closed' | 'reopened' {
+    // Map Bitbucket actions to our action types
+    const actionMap: Record<string, 'opened' | 'synchronize' | 'closed' | 'reopened'> = {
+      'created': 'opened',
+      'updated': 'synchronize',
+      'opened': 'opened',
+      'closed': 'closed',
+      'reopened': 'reopened',
+      'merge': 'closed',
+    };
+    return actionMap[action] || 'opened';
   }
 
   async getFileContent(repo: string, path: string, ref: string): Promise<string> {
@@ -166,8 +196,11 @@ export class BitbucketClient implements GitProviderClient {
   }
 
   private getWorkspaceRepo(): [string, string] {
-    const parts = this.config.token.split('/');
-    return [parts[0], parts[1]];
+    // Workspace and repo should come from config, not derived from token
+    if (this.config.workspace && this.config.repo) {
+      return [this.config.workspace, this.config.repo];
+    }
+    throw new Error('Bitbucket workspace and repo must be configured');
   }
 
   private mapStatus(status: string): string {
