@@ -1,19 +1,74 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import crypto from 'crypto';
-import {
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { createGitProviderClient } from './index';
+import { 
+  createWebhookConfig, 
+  getWebhookConfigs, 
+  updateWebhookConfig, 
+  deleteWebhookConfig,
+  createScanTrigger,
+  getPendingTriggers,
+  updateScanTriggerStatus,
+  saveGitProviderConfig,
+  getGitProviderConfig,
+  decryptSecret,
+  encryptSecret,
   processGitHubWebhook,
   deliverWebhook,
-  createWebhookConfig,
   listWebhookConfigs,
   getWebhookConfig,
-  updateWebhookConfig,
-  deleteWebhookConfig,
   verifyGitHubSignature,
   recordGitHubInstallation,
   linkRepository,
   getInstallationRepos,
   connectWebhooksDb,
 } from './service';
+import { WebhookDelivery, ScanTrigger } from './types';
+import { scannerQueue } from '../queue';
+import { getProjectById, createScan, createScanRun } from '../db';
+import { SupportedScanner } from '../parsers';
+
+// Simple encryption for secrets
+const ENCRYPTION_KEY = process.env.SENTINEL_ENCRYPTION_KEY || 'default-key-32-bytes-long!!';
+const IV_LENGTH = 16;
+
+function encrypt(text: string): string {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY.padEnd(32)), iv);
+  let encrypted = cipher.update(text, 'utf8');
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+function decrypt(text: string): string {
+  const parts = text.split(':');
+  const iv = Buffer.from(parts[0], 'hex');
+  const authTag = Buffer.from(parts[1], 'hex');
+  const encrypted = Buffer.from(parts[2], 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY.padEnd(32)), iv);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(encrypted);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
+// Validate URL to prevent SSRF attacks
+function isValidApiUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    const hostname = parsed.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || 
+        hostname === '0.0.0.0' || hostname === '::1') return false;
+    if (/^10\.\d+\.\d+\.\d+$/.test(hostname)) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(hostname)) return false;
+    if (/^192\.168\.\d+\.\d+$/.test(hostname)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface GitHubWebhookHeaders {
   'x-github-event': string;
@@ -23,36 +78,14 @@ interface GitHubWebhookHeaders {
   'content-type': string;
 }
 
-interface CreateWebhookBody {
-  name: string;
-  endpointUrl: string;
-  eventTypes: string[];
-  description?: string;
-  secret?: string;
-  retryCount?: number;
-  retryDelaySeconds?: number;
-  timeoutSeconds?: number;
-}
-
-interface UpdateWebhookBody {
-  name?: string;
-  description?: string;
-  endpoint_url?: string;
-  event_types?: string[];
-  is_active?: boolean;
-  retry_count?: number;
-  retry_delay_seconds?: number;
-  timeout_seconds?: number;
-}
-
-export async function webhookRoutes(fastify: FastifyInstance) {
+export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   // Ensure database connection
   fastify.addHook('onReady', async () => {
     await connectWebhooksDb();
   });
 
   // ============================================
-  // INBOUND WEBHOOK ENDPOINTS
+  // INBOUND WEBHOOK ENDPOINTS (PR #14)
   // ============================================
 
   // GitHub App webhook receiver
@@ -138,7 +171,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   });
 
   // ============================================
-  // OUTBOUND WEBHOOK MANAGEMENT
+  // OUTBOUND WEBHOOK MANAGEMENT (PR #14)
   // ============================================
 
   // List all webhook configurations
@@ -147,7 +180,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
       const webhooks = await listWebhookConfigs();
       return webhooks.map(wh => ({
         ...wh,
-        secret: wh.secret ? '***hidden***' : null, // Don't return secrets
+        secret: wh.secret ? '***hidden***' : null,
       }));
     } catch (error) {
       fastify.log.error(error);
@@ -156,9 +189,10 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   });
 
   // Create new webhook configuration
-  fastify.post<{ Body: CreateWebhookBody }>('/webhooks', async (request, reply) => {
+  fastify.post('/webhooks', async (request, reply) => {
     try {
-      const { name, endpointUrl, eventTypes, description, secret, retryCount, retryDelaySeconds, timeoutSeconds } = request.body;
+      const body = request.body as { name?: string; endpointUrl?: string; eventTypes?: string[]; description?: string; secret?: string };
+      const { name, endpointUrl, eventTypes, description, secret } = body;
 
       if (!name || !endpointUrl || !eventTypes || eventTypes.length === 0) {
         return reply.status(400).send({ error: 'Missing required fields: name, endpointUrl, eventTypes' });
@@ -167,9 +201,6 @@ export async function webhookRoutes(fastify: FastifyInstance) {
       const id = await createWebhookConfig(name, endpointUrl, eventTypes, 'system', {
         description,
         secret,
-        retryCount,
-        retryDelaySeconds,
-        timeoutSeconds,
       });
 
       return reply.status(201).send({ id });
@@ -197,9 +228,10 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   });
 
   // Update webhook configuration
-  fastify.patch<{ Params: { id: string }; Body: UpdateWebhookBody }>('/webhooks/:id', async (request, reply) => {
+  fastify.patch<{ Params: { id: string } }>('/webhooks/:id', async (request, reply) => {
     try {
-      const success = await updateWebhookConfig(request.params.id, request.body);
+      const updates = request.body as Record<string, any>;
+      const success = await updateWebhookConfig(request.params.id, updates);
       if (!success) {
         return reply.status(404).send({ error: 'Webhook not found' });
       }
@@ -225,7 +257,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   });
 
   // Test webhook delivery
-  fastify.post<{ Params: { id: string }; Body: { eventType: string; testPayload?: Record<string, any> } }>(
+  fastify.post<{ Params: { id: string }; Body: { eventType?: string; testPayload?: Record<string, any> } }>(
     '/webhooks/:id/test',
     async (request, reply) => {
       try {
@@ -240,65 +272,6 @@ export async function webhookRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // ============================================
-  // GITHUB APP INSTALLATION
-  // ============================================
-
-  // Record GitHub App installation callback
-  fastify.post<{ Body: { installationId: string; accountId: string; accountName: string; permissions: Record<string, any>; events: string[] } }>(
-    '/webhooks/github/install',
-    async (request, reply) => {
-      try {
-        const { installationId, accountId, accountName, permissions, events } = request.body;
-
-        if (!installationId || !accountId) {
-          return reply.status(400).send({ error: 'Missing installationId or accountId' });
-        }
-
-        const id = await recordGitHubInstallation(installationId, accountId, accountName, permissions, events);
-        return { success: true, installationId: id };
-      } catch (error) {
-        fastify.log.error(error);
-        return reply.status(500).send({ error: 'Failed to record installation' });
-      }
-    }
-  );
-
-  // Link repository to installation
-  fastify.post<{ Body: { installationId: string; repoId: string; repoName: string; repoFullName: string; defaultBranch?: string } }>(
-    '/webhooks/github/link-repo',
-    async (request, reply) => {
-      try {
-        const { installationId, repoId, repoName, repoFullName, defaultBranch = 'main' } = request.body;
-
-        if (!installationId || !repoId || !repoName || !repoFullName) {
-          return reply.status(400).send({ error: 'Missing required fields' });
-        }
-
-        const id = await linkRepository(installationId, repoId, repoName, repoFullName, defaultBranch);
-        return { success: true, linkId: id };
-      } catch (error) {
-        fastify.log.error(error);
-        return reply.status(500).send({ error: 'Failed to link repository' });
-      }
-    }
-  );
-
-  // List linked repositories for installation
-  fastify.get<{ Params: { installationId: string } }>('/webhooks/github/install/:installationId/repos', async (request, reply) => {
-    try {
-      const repos = await getInstallationRepos(request.params.installationId);
-      return repos;
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.status(500).send({ error: 'Failed to list repositories' });
-    }
-  });
-
-  // ============================================
-  // DELIVERY STATUS
-  // ============================================
-
   // Get delivery statistics
   fastify.get('/webhooks/stats', async (request, reply) => {
     try {
@@ -309,5 +282,106 @@ export async function webhookRoutes(fastify: FastifyInstance) {
       fastify.log.error(error);
       return reply.status(500).send({ error: 'Failed to get stats' });
     }
+  });
+
+  // ============================================
+  // GIT PROVIDER CONFIGURATION (PR #17)
+  // ============================================
+
+  fastify.post('/git/providers', async (request, reply) => {
+    const body = request.body as { projectId?: string; provider?: string; apiUrl?: string; token?: string; webhookSecret?: string };
+    const { projectId, provider, apiUrl, token, webhookSecret } = body;
+
+    if (!projectId || !provider || !token) {
+      reply.status(400).send({ error: 'Missing required fields' });
+      return;
+    }
+
+    if (apiUrl && !isValidApiUrl(apiUrl)) {
+      reply.status(400).send({ error: 'Invalid API URL' });
+      return;
+    }
+
+    await saveGitProviderConfig({
+      projectId,
+      provider,
+      apiUrl,
+      token: encrypt(token),
+      webhookSecret: webhookSecret ? encrypt(webhookSecret) : undefined,
+    });
+
+    reply.status(201).send({ message: 'Provider configured successfully' });
+  });
+
+  fastify.get('/projects/:id/git/provider', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const config = await getGitProviderConfig(id);
+    reply.send(config ? { configured: true, provider: config.provider } : { configured: false });
+  });
+
+  // ============================================
+  // SCAN TRIGGER MANAGEMENT (PR #17)
+  // ============================================
+
+  fastify.get('/scan-triggers', async (request, reply) => {
+    const { projectId, status } = request.query as { projectId?: string; status?: string };
+    const triggers = await getPendingTriggers(projectId);
+    reply.send(triggers);
+  });
+
+  fastify.patch('/scan-triggers/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { status, startedAt, completedAt } = request.body as { status?: string; startedAt?: Date; completedAt?: Date };
+    await updateScanTriggerStatus(id, status, startedAt, completedAt);
+    reply.send({ message: 'Trigger updated' });
+  });
+
+  // Trigger a scan manually or via webhook
+  fastify.post('/scans/trigger', async (request, reply) => {
+    const body = request.body as { projectId?: string; scanners?: string[]; triggerType?: string; source?: string; branch?: string; commitSha?: string; prNumber?: number };
+    const { projectId, scanners, triggerType, source, branch, commitSha, prNumber } = body;
+
+    if (!projectId || !scanners?.length) {
+      reply.status(400).send({ error: 'Missing required fields' });
+      return;
+    }
+
+    const trigger = await createScanTrigger({
+      projectId,
+      triggerType: triggerType || 'manual',
+      source: source || 'manual',
+      branch,
+      commitSha,
+      prNumber,
+      config: {
+        scanners,
+        diffMode: false,
+        autoScan: true,
+        failOnCritical: false,
+      },
+    });
+
+    const project = await getProjectById(projectId);
+    if (!project) {
+      reply.status(404).send({ error: 'Project not found' });
+      return;
+    }
+
+    const scanRecord = await createScan(projectId, scanners as SupportedScanner[]);
+
+    for (const scannerType of scanners) {
+      const run = await createScanRun(scanRecord.id, scannerType);
+      await scannerQueue.add('scan-job', {
+        scanId: scanRecord.id,
+        scanRunId: run.id,
+        hostPath: project.path,
+        scannerType,
+      });
+    }
+
+    reply.status(202).send({
+      trigger,
+      scan: scanRecord,
+    });
   });
 }
