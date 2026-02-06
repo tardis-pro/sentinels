@@ -1,5 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
   connectDb,
   createProject,
@@ -9,6 +11,7 @@ import {
   getProjectById,
   getScanById,
   getFindingsByScanId,
+  getProjectPathByScanId,
   listFindings,
   listProjects,
   listScanRuns,
@@ -22,10 +25,14 @@ import { SupportedScanner } from './parsers';
 import { policyRoutes } from './policies';
 import { analyticsRoutes } from './analytics';
 import { webhookRoutes } from './webhooks';
+import { buildCapabilityManifest } from './capabilities';
+import { collaborationRoutes } from './collaboration/routes';
 
 const fastify = Fastify({
   logger: true,
 });
+
+const capabilityManifest = buildCapabilityManifest();
 
 fastify.register(cors, {
   origin: true, // Allow all origins for this local-first tool
@@ -40,6 +47,21 @@ fastify.register(analyticsRoutes);
 // Register webhook routes
 fastify.register(webhookRoutes);
 
+// Register collaboration routes
+fastify.register(collaborationRoutes);
+
+fastify.get('/_capabilities', async (_request) => {
+  const groups = Object.entries(capabilityManifest).map(([name, entries]) => ({
+    name,
+    count: Object.keys(entries).length,
+  }));
+
+  return {
+    totalGroups: groups.length,
+    groups,
+  };
+});
+
 // Register new codebase
 fastify.post('/projects', async (request, reply) => {
   const { name, path } = request.body as { name: string; path: string };
@@ -48,9 +70,20 @@ fastify.post('/projects', async (request, reply) => {
 });
 
 // List projects
-fastify.get('/projects', async (request, reply) => {
+fastify.get('/projects', async (_request, reply) => {
   const projects = await listProjects();
   reply.send(projects);
+});
+
+// Get single project
+fastify.get('/projects/:id', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const project = await getProjectById(id);
+  if (!project) {
+    reply.status(404).send({ error: 'Project not found' });
+    return;
+  }
+  reply.send(project);
 });
 
 // Trigger scan
@@ -130,7 +163,108 @@ fastify.get('/findings', async (request, reply) => {
 fastify.get('/scans/:id/findings', async (request, reply) => {
   const { id } = request.params as { id: string };
   const rows = await getFindingsByScanId(id);
-  reply.send(rows);
+
+  const projectPath = (await getProjectPathByScanId(id)) || '';
+
+  const fileCache = new Map<string, string[]>();
+  const sonarCache = new Map<string, string[]>();
+
+  const readSonarSourceLines = async (component: string): Promise<string[] | null> => {
+    if (!component) {
+      return null;
+    }
+    if (sonarCache.has(component)) {
+      return sonarCache.get(component) || null;
+    }
+
+    try {
+      const baseUrl = process.env.SONARQUBE_URL || 'http://sonarqube:9000';
+      const token = process.env.SONAR_TOKEN || process.env.SONARQUBE_TOKEN;
+      const username = process.env.SONARQUBE_USERNAME || 'admin';
+      const password = process.env.SONARQUBE_PASSWORD || 'Admin@123123';
+      const authCandidates = [
+        token ? `${token}:` : '',
+        `${username}:${password}`,
+      ].filter(Boolean);
+
+      for (const authValue of authCandidates) {
+        const res = await fetch(
+          `${baseUrl}/api/sources/raw?key=${encodeURIComponent(component)}`,
+          {
+            headers: {
+              Authorization: `Basic ${Buffer.from(authValue).toString('base64')}`,
+            },
+          }
+        );
+
+        if (!res.ok) {
+          continue;
+        }
+
+        const content = await res.text();
+        const lines = content.split(/\r?\n/);
+        sonarCache.set(component, lines);
+        return lines;
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const readLines = async (filePathValue: string): Promise<string[] | null> => {
+    if (!path.isAbsolute(filePathValue) && !projectPath) {
+      return null;
+    }
+
+    const resolvedPath = path.isAbsolute(filePathValue)
+      ? filePathValue
+      : path.resolve(projectPath, filePathValue);
+
+    if (fileCache.has(resolvedPath)) {
+      return fileCache.get(resolvedPath) || null;
+    }
+
+    try {
+      const content = await fs.readFile(resolvedPath, 'utf8');
+      const lines = content.split(/\r?\n/);
+      fileCache.set(resolvedPath, lines);
+      return lines;
+    } catch {
+      return null;
+    }
+  };
+
+  const enriched = await Promise.all(
+    rows.map(async (row: any) => {
+      if (row.scanner_name !== 'sonarqube' || !row.file_path || !row.start_line) {
+        return row;
+      }
+
+      const lines =
+        (await readLines(row.file_path)) ||
+        (await readSonarSourceLines((row.raw_data?.component as string) || ''));
+      if (!lines) {
+        return row;
+      }
+
+      const startLine = Math.max(1, Number(row.start_line) || 1);
+      const endLine = Math.max(startLine, Number(row.end_line) || startLine);
+      const contextStart = Math.max(1, startLine - 3);
+      const contextEnd = Math.min(lines.length, endLine + 3);
+      const snippet = lines.slice(contextStart - 1, contextEnd).join('\n');
+
+      return {
+        ...row,
+        code_snippet: snippet,
+        snippet_start_line: contextStart,
+        snippet_end_line: contextEnd,
+      };
+    })
+  );
+
+  reply.send(enriched);
 });
 
 // Register AI routes

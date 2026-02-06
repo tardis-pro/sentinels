@@ -34,6 +34,10 @@ import {
   createCollaborationTables,
 } from './index';
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function collaborationRoutes(fastify: FastifyInstance) {
   fastify.addHook('onReady', async () => {
     await createCollaborationTables();
@@ -210,6 +214,10 @@ export async function collaborationRoutes(fastify: FastifyInstance) {
 
   fastify.get('/sla', async (request, reply) => {
     const { orgId } = request.query as { orgId: string };
+    if (!isUuid(orgId)) {
+      reply.status(400).send({ error: 'orgId must be a valid UUID' });
+      return;
+    }
     const configs = await getSLAConfigs(orgId);
     return { configs };
   });
@@ -251,6 +259,10 @@ export async function collaborationRoutes(fastify: FastifyInstance) {
 
   fastify.get('/risk-acceptance/pending', async (request, reply) => {
     const { orgId } = request.query as { orgId: string };
+    if (!isUuid(orgId)) {
+      reply.status(400).send({ error: 'orgId must be a valid UUID' });
+      return;
+    }
     const acceptances = await getPendingRiskAcceptances(orgId);
     return { acceptances, total: acceptances.length };
   });
@@ -271,6 +283,10 @@ export async function collaborationRoutes(fastify: FastifyInstance) {
 
   fastify.get('/issue-trackers', async (request, reply) => {
     const { orgId, enabledOnly } = request.query as { orgId: string; enabledOnly?: string };
+    if (!isUuid(orgId)) {
+      reply.status(400).send({ error: 'orgId must be a valid UUID' });
+      return;
+    }
     const trackers = await getIssueTrackers(orgId, enabledOnly === 'true');
     return { trackers, total: trackers.length };
   });
@@ -296,6 +312,10 @@ export async function collaborationRoutes(fastify: FastifyInstance) {
 
   fastify.get('/collaboration/stats', async (request, reply) => {
     const { orgId } = request.query as { orgId: string };
+    if (!isUuid(orgId)) {
+      reply.status(400).send({ error: 'orgId must be a valid UUID' });
+      return;
+    }
     const stats = await getCollaborationStats(orgId);
     return stats;
   });

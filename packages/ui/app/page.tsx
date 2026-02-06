@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Plus, Shield, ChevronRight, BarChart3 } from 'lucide-react';
+import { Plus, Shield, ChevronRight, BarChart3, Boxes, Webhook, Bot, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Project {
@@ -69,7 +69,19 @@ export default function Dashboard() {
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors"
           >
             <BarChart3 className="w-4 h-4" />
-            Analytics
+            Overview
+          </Link>
+          <Link href="/policies" className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors text-sm">
+            <Boxes className="w-4 h-4" /> Policies
+          </Link>
+          <Link href="/webhooks" className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors text-sm">
+            <Webhook className="w-4 h-4" /> Webhooks
+          </Link>
+          <Link href="/ai" className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors text-sm">
+            <Bot className="w-4 h-4" /> AI
+          </Link>
+          <Link href="/collaboration" className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors text-sm">
+            <Users className="w-4 h-4" /> Collaboration
           </Link>
           <button
             onClick={() => setIsCreating(!isCreating)}
