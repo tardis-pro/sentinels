@@ -1,5 +1,3 @@
-import crypto from 'crypto';
-
 export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
 
 export interface WebhookConfig {
@@ -52,6 +50,10 @@ export interface GitProviderConfig {
   apiUrl: string;
   token: string;
   webhookSecret?: string;
+  owner?: string;
+  repo?: string;
+  workspace?: string;
+  projectPath?: string;
 }
 
 export interface CommitStatus {

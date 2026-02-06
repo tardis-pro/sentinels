@@ -5,6 +5,103 @@ const client = new Client({
   connectionString: process.env.DATABASE_URL || 'postgres://sentinel:sentinel@localhost:35432/sentinel',
 });
 
+let webhooksConnected = false;
+let webhooksConnectPromise: Promise<void> | null = null;
+
+async function ensureWebhookServiceTables() {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      installation_id TEXT,
+      event_type TEXT NOT NULL,
+      delivery_id TEXT UNIQUE NOT NULL,
+      payload JSONB NOT NULL,
+      headers JSONB,
+      processing_status TEXT NOT NULL DEFAULT 'received',
+      error_message TEXT,
+      processed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_installations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      provider TEXT NOT NULL,
+      installation_id TEXT NOT NULL,
+      account_id TEXT,
+      account_name TEXT,
+      permissions JSONB,
+      events TEXT[] DEFAULT '{}',
+      auto_scan BOOLEAN DEFAULT true,
+      scan_on_push BOOLEAN DEFAULT true,
+      scan_on_pr BOOLEAN DEFAULT true,
+      branch_pattern TEXT DEFAULT '.*',
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(provider, installation_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_repo_links (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      installation_id TEXT NOT NULL,
+      repo_id TEXT NOT NULL,
+      repo_name TEXT,
+      repo_full_name TEXT,
+      default_branch TEXT DEFAULT 'main',
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(installation_id, repo_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      event_type TEXT NOT NULL,
+      project_id UUID,
+      scan_id UUID,
+      metric_name TEXT NOT NULL,
+      metric_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+      dimensions JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS webhook_config_id UUID;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS event_type TEXT;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS response_status INT;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS response_headers JSONB;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS error_message TEXT;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+    ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+    ALTER TABLE webhook_deliveries ALTER COLUMN webhook_id DROP NOT NULL;
+
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS name TEXT;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS endpoint_url TEXT;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS event_types TEXT[] DEFAULT '{}';
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 3;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS retry_delay_seconds INT DEFAULT 60;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS timeout_seconds INT DEFAULT 30;
+    ALTER TABLE webhook_configs ADD COLUMN IF NOT EXISTS created_by TEXT;
+    ALTER TABLE webhook_configs ALTER COLUMN secret DROP NOT NULL;
+
+    UPDATE webhook_configs
+    SET endpoint_url = COALESCE(endpoint_url, url),
+        event_types = COALESCE(event_types, events),
+        is_active = COALESCE(is_active, enabled, true)
+    WHERE endpoint_url IS NULL OR event_types IS NULL OR is_active IS NULL;
+
+    UPDATE webhook_deliveries
+    SET webhook_config_id = COALESCE(webhook_config_id, webhook_id),
+        event_type = COALESCE(event_type, event),
+        response_status = COALESCE(response_status, response_code)
+    WHERE webhook_config_id IS NULL OR event_type IS NULL OR response_status IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_webhook_events_delivery_id ON webhook_events(delivery_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_installations_lookup ON webhook_installations(provider, installation_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_repo_links_repo_id ON webhook_repo_links(repo_id);
+  `);
+}
+
 interface WebhookConfig {
   id: string;
   name: string;
@@ -27,8 +124,27 @@ interface WebhookEvent {
 }
 
 export async function connectWebhooksDb() {
-  await client.connect();
-  console.log('Connected to PostgreSQL for webhooks');
+  if (webhooksConnected) {
+    return;
+  }
+  if (webhooksConnectPromise) {
+    await webhooksConnectPromise;
+    return;
+  }
+
+  webhooksConnectPromise = client
+    .connect()
+    .then(async () => {
+      await ensureWebhookServiceTables();
+      webhooksConnected = true;
+      console.log('Connected to PostgreSQL for webhooks');
+    })
+    .catch((error) => {
+      webhooksConnectPromise = null;
+      throw error;
+    });
+
+  await webhooksConnectPromise;
 }
 
 // ============================================

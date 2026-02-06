@@ -63,10 +63,99 @@ const parseJsonOutput = async (rawOutput: string) => {
 };
 
 const MAX_SCAN_FILE_SIZE_BYTES = 2 * 1024 * 1024;
+const MAX_LARGE_FILE_EXCLUSIONS = 200;
 const SEMGREP_CONFIGS = (process.env.SEMGREP_CONFIG || 'auto')
   .split(',')
   .map((cfg) => cfg.trim())
   .filter(Boolean);
+
+async function collectLargeFileExclusions(
+  rootPath: string,
+  maxBytes: number,
+  maxCount: number = MAX_LARGE_FILE_EXCLUSIONS
+): Promise<string[]> {
+  const results: string[] = [];
+
+  const walk = async (currentPath: string): Promise<void> => {
+    if (results.length >= maxCount) {
+      return;
+    }
+
+    const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (results.length >= maxCount) {
+        break;
+      }
+
+      const fullPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const stats = await fs.promises.stat(fullPath);
+      if (stats.size <= maxBytes) {
+        continue;
+      }
+
+      const relativePath = path.relative(rootPath, fullPath).split(path.sep).join('/');
+      if (relativePath && !relativePath.startsWith('..')) {
+        results.push(relativePath);
+      }
+    }
+  };
+
+  try {
+    await walk(rootPath);
+  } catch (error) {
+    console.warn(`Failed to collect large-file exclusions: ${(error as Error).message}`);
+  }
+
+  return results;
+}
+
+function applyLargeFileExclusions(scannerType: SupportedScanner, dockerArgs: string[], relativePaths: string[]) {
+  if (relativePaths.length === 0) {
+    return;
+  }
+
+  switch (scannerType) {
+    case 'trivy': {
+      const targetIndex = dockerArgs.lastIndexOf('/target');
+      if (targetIndex === -1) return;
+      const trivyExcludes = relativePaths.flatMap((relativePath) => ['--skip-files', `/target/${relativePath}`]);
+      dockerArgs.splice(targetIndex, 0, ...trivyExcludes);
+      return;
+    }
+    case 'semgrep': {
+      const srcIndex = dockerArgs.lastIndexOf('/src');
+      if (srcIndex === -1) return;
+      const semgrepExcludes = relativePaths.flatMap((relativePath) => ['--exclude', relativePath]);
+      dockerArgs.splice(srcIndex, 0, ...semgrepExcludes);
+      return;
+    }
+    case 'bandit': {
+      dockerArgs.push('-x', relativePaths.map((relativePath) => `/target/${relativePath}`).join(','));
+      return;
+    }
+    case 'sonarqube': {
+      const exclusionIndex = dockerArgs.findIndex((arg) => arg.startsWith('-Dsonar.exclusions='));
+      const joined = relativePaths.join(',');
+      if (exclusionIndex >= 0) {
+        dockerArgs[exclusionIndex] = `${dockerArgs[exclusionIndex]},${joined}`;
+      } else {
+        dockerArgs.push(`-Dsonar.exclusions=${joined}`);
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
 
 function runDockerCommand(args: string[]) {
   return new Promise<void>((resolve, reject) => {
@@ -395,12 +484,13 @@ interface SonarCredentials {
 }
 
 function resolveSonarCredentials(): SonarCredentials {
-  if (process.env.SONARQUBE_TOKEN) {
-    return { token: process.env.SONARQUBE_TOKEN };
+  const token = process.env.SONAR_TOKEN || process.env.SONARQUBE_TOKEN;
+  if (token && token.trim().length > 0) {
+    return { token: token.trim() };
   }
   return {
     username: process.env.SONARQUBE_USERNAME || 'admin',
-    password: process.env.SONARQUBE_PASSWORD || 'Admin@1234567',
+    password: process.env.SONARQUBE_PASSWORD || 'admin',
   };
 }
 
@@ -478,6 +568,15 @@ async function fetchSonarIssues(projectKey: string) {
   const issues = await sonarRequest(`/api/issues/search?${params.toString()}`, true);
   const version = await sonarRequest<string>('/api/server/version', false);
   return { ...issues, serverVersion: version?.trim() };
+}
+
+async function validateSonarAuthentication() {
+  const authState = await sonarRequest<{ valid?: boolean }>('/api/authentication/validate', true);
+  if (!authState?.valid) {
+    throw new Error(
+      'SonarQube authentication failed. Set a valid SONAR_TOKEN (or SONARQUBE_TOKEN) or valid SONARQUBE_USERNAME/SONARQUBE_PASSWORD.'
+    );
+  }
 }
 
 function buildScannerCommand(scannerType: SupportedScanner, target: string, scanId: string): ScannerCommandConfig {
@@ -582,16 +681,24 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
         dockerArgs.push('-e', `SONAR_LOGIN=${creds.username}`, '-e', `SONAR_PASSWORD=${creds.password}`);
       }
 
-      dockerArgs.push(
-        'sonarsource/sonar-scanner-cli',
+      const sonarProperties = [
         `-Dsonar.projectKey=${projectKey}`,
         `-Dsonar.projectName=${projectKey}`,
         '-Dsonar.sources=.',
-        '-Dsonar.qualitygate.wait=true'
-      );
-      if (COMMON_IGNORE_PATTERNS.length > 0) {
-        dockerArgs.push(`-Dsonar.exclusions=${COMMON_IGNORE_PATTERNS.join(',')}`);
+        '-Dsonar.qualitygate.wait=true',
+      ];
+
+      if (creds.token) {
+        sonarProperties.push(`-Dsonar.token=${creds.token}`);
+      } else if (creds.username && creds.password) {
+        sonarProperties.push(`-Dsonar.login=${creds.username}`, `-Dsonar.password=${creds.password}`);
       }
+
+      if (COMMON_IGNORE_PATTERNS.length > 0) {
+        sonarProperties.push(`-Dsonar.exclusions=${COMMON_IGNORE_PATTERNS.join(',')}`);
+      }
+
+      dockerArgs.push('sonarsource/sonar-scanner-cli', ...sonarProperties);
 
       return {
         dockerArgs,
@@ -605,6 +712,10 @@ function buildScannerCommand(scannerType: SupportedScanner, target: string, scan
 }
 
 async function runScannerProcess(scanId: string, scannerType: SupportedScanner, hostPath: string) {
+  if (scannerType === 'sonarqube') {
+    await validateSonarAuthentication();
+  }
+
   // Use original host path for Docker volume mounts (Docker runs on host)
   let target = hostPath;
   const cleanupTasks: Array<() => Promise<void>> = [];
@@ -615,7 +726,12 @@ async function runScannerProcess(scanId: string, scannerType: SupportedScanner, 
     cleanupTasks.push(prepared.cleanup);
   }
 
+  const largeFileExclusions = scannerType === 'clair'
+    ? []
+    : await collectLargeFileExclusions(target, MAX_SCAN_FILE_SIZE_BYTES);
+
   const { dockerArgs, parser, transformOutput } = buildScannerCommand(scannerType, target, scanId);
+  applyLargeFileExclusions(scannerType, dockerArgs, largeFileExclusions);
   const convertOutput = transformOutput || parseJsonOutput;
 
   // Handle scanners that use direct API calls (no docker command)

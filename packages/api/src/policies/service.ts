@@ -4,6 +4,9 @@ const client = new Client({
   connectionString: process.env.DATABASE_URL || 'postgres://sentinel:sentinel@localhost:35432/sentinel',
 });
 
+let policyConnected = false;
+let policyConnectPromise: Promise<void> | null = null;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -87,12 +90,82 @@ export interface ComplianceControl {
 // ============================================================================
 
 export async function connectPolicyDb(): Promise<void> {
-  await client.connect();
-  console.log('Policy Engine: Connected to PostgreSQL');
+  if (policyConnected) {
+    return;
+  }
+  if (policyConnectPromise) {
+    await policyConnectPromise;
+    return;
+  }
+
+  policyConnectPromise = client
+    .connect()
+    .then(async () => {
+      await createPolicyTables();
+      policyConnected = true;
+      console.log('Policy Engine: Connected to PostgreSQL');
+    })
+    .catch((error) => {
+      policyConnectPromise = null;
+      throw error;
+    });
+
+  await policyConnectPromise;
+}
+
+export async function createPolicyTables(): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS policies (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      rego_policy TEXT NOT NULL,
+      enabled BOOLEAN DEFAULT true,
+      enforcement_action TEXT NOT NULL,
+      tags JSONB DEFAULT '[]',
+      project_id UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS compliance_frameworks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS compliance_controls (
+      id TEXT PRIMARY KEY,
+      framework_id UUID NOT NULL REFERENCES compliance_frameworks(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      policy_ids JSONB DEFAULT '[]',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS finding_compliance_mapping (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      framework_id UUID NOT NULL REFERENCES compliance_frameworks(id) ON DELETE CASCADE,
+      control_id TEXT NOT NULL,
+      control_name TEXT NOT NULL,
+      finding_rule_pattern TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_policies_category ON policies(category);
+    CREATE INDEX IF NOT EXISTS idx_policies_enabled ON policies(enabled);
+    CREATE INDEX IF NOT EXISTS idx_policies_project ON policies(project_id);
+    CREATE INDEX IF NOT EXISTS idx_compliance_controls_framework ON compliance_controls(framework_id);
+    CREATE INDEX IF NOT EXISTS idx_finding_compliance_mapping_framework ON finding_compliance_mapping(framework_id);
+  `);
 }
 
 async function ensureConnection(): Promise<void> {
-  if (client.connectionParameters.database === undefined) {
+  if (!policyConnected) {
     await connectPolicyDb();
   }
 }
@@ -343,10 +416,10 @@ function extractRulesFromRego(rego: string): RegoRule[] {
   const rules: RegoRule[] = [];
   
   // Simplified Rego parsing - look for deny rules
-  const denyMatches = rego.matchAll(/deny\s*(?:\[(?<message>[^\]]+)\])?\s*(?:if)?\s*\{([^}]+)\}/g);
+  const denyMatches = rego.matchAll(/deny\s*(?:\[([^\]]+)\])?\s*(?:if)?\s*\{([^}]+)\}/g);
   
   for (const match of denyMatches) {
-    const message = match.groups?.message || 'Policy violation';
+    const message = match[1] || 'Policy violation';
     const condition = match[2];
     
     // Extract rule name from comments or use default
@@ -801,7 +874,12 @@ export async function seedBuiltInPolicies(): Promise<Policy[]> {
 export async function createComplianceFramework(framework: {
   name: string;
   description: string;
-  controls: Omit<ComplianceControl, 'id' | 'frameworkId'>[];
+  controls: Array<{
+    id?: string;
+    name: string;
+    description: string;
+    policyIds?: string[];
+  }>;
 }): Promise<ComplianceFramework> {
   await ensureConnection();
   
@@ -813,13 +891,15 @@ export async function createComplianceFramework(framework: {
 
   const frameworkId = result.rows[0].id;
 
-  for (const control of framework.controls) {
+  for (let index = 0; index < framework.controls.length; index++) {
+    const control = framework.controls[index];
+    const controlId = control.id || `${framework.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-ctrl-${index + 1}`;
     await client.query(
       `INSERT INTO compliance_controls (framework_id, id, name, description, policy_ids)
        VALUES ($1, $2, $3, $4, $5)`,
       [
         frameworkId,
-        control.id,
+        controlId,
         control.name,
         control.description,
         JSON.stringify(control.policyIds || []),
@@ -831,9 +911,11 @@ export async function createComplianceFramework(framework: {
     id: frameworkId,
     ...framework,
     controls: framework.controls.map((c, i) => ({
-      ...c,
+      name: c.name,
+      description: c.description,
+      policyIds: c.policyIds || [],
       frameworkId,
-      id: c.id || `ctrl-${i}`,
+      id: c.id || `ctrl-${i + 1}`,
     })),
   };
 }

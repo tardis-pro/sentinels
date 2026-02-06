@@ -4,6 +4,9 @@ const client = new Client({
   connectionString: process.env.DATABASE_URL || 'postgres://sentinel:sentinel@localhost:35432/sentinel',
 });
 
+let analyticsConnected = false;
+let analyticsConnectPromise: Promise<void> | null = null;
+
 interface DateRange {
   start?: string;
   end?: string;
@@ -59,8 +62,45 @@ interface ComplianceSummary {
 }
 
 export async function connectAnalyticsDb() {
-  await client.connect();
-  console.log('Connected to PostgreSQL for analytics');
+  if (analyticsConnected) {
+    return;
+  }
+  if (analyticsConnectPromise) {
+    await analyticsConnectPromise;
+    return;
+  }
+
+  analyticsConnectPromise = client
+    .connect()
+    .then(async () => {
+      await createAnalyticsTables();
+      analyticsConnected = true;
+      console.log('Connected to PostgreSQL for analytics');
+    })
+    .catch((error) => {
+      analyticsConnectPromise = null;
+      throw error;
+    });
+
+  await analyticsConnectPromise;
+}
+
+export async function createAnalyticsTables() {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      event_type TEXT NOT NULL,
+      project_id UUID,
+      scan_id UUID,
+      metric_name TEXT NOT NULL,
+      metric_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+      dimensions JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_event_type ON analytics_events(event_type);
+  `);
 }
 
 export async function getAnalyticsSummary(projectId?: string, dateRange?: DateRange): Promise<AnalyticsSummary> {
@@ -181,7 +221,25 @@ export async function getFindingTrends(
 
 export async function getProjectScores(limit: number = 10): Promise<ProjectScore[]> {
   const result = await client.query(
-    `SELECT * FROM mv_project_scores ORDER BY security_score ASC LIMIT $1`,
+    `SELECT
+       p.id AS project_id,
+       p.name AS project_name,
+       COALESCE(COUNT(f.id), 0) AS total_findings,
+       COALESCE(COUNT(*) FILTER (WHERE f.severity = 'CRITICAL'), 0) AS critical_count,
+       COALESCE(COUNT(*) FILTER (WHERE f.severity = 'HIGH'), 0) AS high_count,
+       MAX(f.created_at) AS last_finding_at,
+       GREATEST(
+         0,
+         100
+         - (COALESCE(COUNT(*) FILTER (WHERE f.severity = 'CRITICAL'), 0) * 25)
+         - (COALESCE(COUNT(*) FILTER (WHERE f.severity = 'HIGH'), 0) * 10)
+       ) AS security_score
+     FROM projects p
+     LEFT JOIN scans s ON s.project_id = p.id
+     LEFT JOIN findings f ON f.scan_id = s.id
+     GROUP BY p.id, p.name
+     ORDER BY security_score ASC
+     LIMIT $1`,
     [limit]
   );
 
@@ -197,7 +255,20 @@ export async function getProjectScores(limit: number = 10): Promise<ProjectScore
 }
 
 export async function getScannerPerformance(): Promise<ScannerPerformance[]> {
-  const result = await client.query('SELECT * FROM mv_scanner_performance');
+  const result = await client.query(
+    `SELECT
+       sr.scanner_name,
+       COUNT(*) AS total_runs,
+       COUNT(*) FILTER (WHERE sr.status = 'completed') AS successful_runs,
+       COUNT(*) FILTER (WHERE sr.status = 'failed') AS failed_runs,
+       AVG(EXTRACT(EPOCH FROM (sr.completed_at - sr.started_at))) FILTER (
+         WHERE sr.completed_at IS NOT NULL AND sr.started_at IS NOT NULL
+       ) AS avg_duration_seconds,
+       COALESCE(SUM(sr.findings_count), 0) AS total_findings
+     FROM scan_runs sr
+     GROUP BY sr.scanner_name
+     ORDER BY sr.scanner_name`
+  );
 
   return result.rows.map(row => ({
     scannerName: row.scanner_name,
@@ -212,6 +283,18 @@ export async function getScannerPerformance(): Promise<ScannerPerformance[]> {
 export async function getComplianceSummary(
   framework: string = 'OWASP Top 10'
 ): Promise<ComplianceSummary> {
+  const frameworkTable = await client.query("SELECT to_regclass('public.compliance_frameworks') AS exists");
+  const mappingTable = await client.query("SELECT to_regclass('public.finding_compliance_mapping') AS exists");
+  if (!frameworkTable.rows[0]?.exists || !mappingTable.rows[0]?.exists) {
+    return {
+      framework,
+      compliantFindings: 0,
+      nonCompliantFindings: 0,
+      compliancePercentage: 100,
+      topControls: [],
+    };
+  }
+
   const frameworkResult = await client.query(
     'SELECT id FROM compliance_frameworks WHERE name = $1',
     [framework]
@@ -279,7 +362,7 @@ export async function getComplianceSummary(
 }
 
 export async function refreshMaterializedViews(): Promise<void> {
-  await client.query('SELECT refresh_analytics_views()');
+  return;
 }
 
 export async function trackAnalyticsEvent(
@@ -302,16 +385,19 @@ export async function getSecurityPostureHistory(
   days: number = 30
 ): Promise<{ date: string; score: number }[]> {
   const result = await client.query(
-    `SELECT 
-        DATE(created_at) as date,
-        AVG(
-          100 - 
-          (COUNT(*) FILTER (WHERE severity = 'CRITICAL') * 25) - 
-          (COUNT(*) FILTER (WHERE severity = 'HIGH') * 10)
-        ) as score
-     FROM findings
-     WHERE created_at >= NOW() - INTERVAL '${days} days'
-     GROUP BY DATE(created_at)
+    `WITH daily AS (
+       SELECT
+         DATE(created_at) AS date,
+         COUNT(*) FILTER (WHERE severity = 'CRITICAL') AS critical_count,
+         COUNT(*) FILTER (WHERE severity = 'HIGH') AS high_count
+       FROM findings
+       WHERE created_at >= NOW() - INTERVAL '${days} days'
+       GROUP BY DATE(created_at)
+     )
+     SELECT
+       date,
+       GREATEST(0, 100 - (critical_count * 25) - (high_count * 10)) AS score
+     FROM daily
      ORDER BY date DESC`,
     []
   );
@@ -356,9 +442,11 @@ export async function getRemediationVelocity(
         GROUP BY week
     ),
     closed AS (
-        SELECT DATE_TRUNC('week', closed_at) as week, COUNT(*) as count
+        SELECT DATE_TRUNC('week', workflow_updated_at) as week, COUNT(*) as count
         FROM findings
-        WHERE closed_at IS NOT NULL AND closed_at >= NOW() - INTERVAL '${days} days'
+        WHERE workflow_state = 'closed'
+          AND workflow_updated_at IS NOT NULL
+          AND workflow_updated_at >= NOW() - INTERVAL '${days} days'
         GROUP BY week
     )
     SELECT 

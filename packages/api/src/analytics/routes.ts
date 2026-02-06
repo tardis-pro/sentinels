@@ -70,7 +70,7 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
     };
   }>('/analytics/projects', async (request, reply) => {
     try {
-      const limit = parseInt(request.query.limit || '10');
+      const limit = Number(request.query.limit ?? 10);
       const scores = await getProjectScores(limit);
       return scores;
     } catch (error) {
@@ -113,7 +113,7 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
     };
   }>('/analytics/posture-history', async (request, reply) => {
     try {
-      const days = parseInt(request.query.days || '30');
+      const days = Number(request.query.days ?? 30);
       const history = await getSecurityPostureHistory(days);
       return history;
     } catch (error) {
@@ -140,7 +140,7 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
     };
   }>('/analytics/remediation-velocity', async (request, reply) => {
     try {
-      const days = parseInt(request.query.days || '30');
+      const days = Number(request.query.days ?? 30);
       const velocity = await getRemediationVelocity(days);
       return velocity;
     } catch (error) {

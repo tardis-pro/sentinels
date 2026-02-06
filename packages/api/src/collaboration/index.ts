@@ -711,7 +711,7 @@ export async function getPendingRiskAcceptances(orgId: string): Promise<RiskAcce
      JOIN scans s ON s.id = f.scan_id
      JOIN projects p ON p.id = s.project_id
      WHERE p.org_id = $1 AND ra.status = 'pending'
-     ORDER BY ra.created_at DESC`,
+     ORDER BY ra.accepted_at DESC`,
     [orgId]
   );
   return result.rows.map(mapRiskAcceptanceRow);

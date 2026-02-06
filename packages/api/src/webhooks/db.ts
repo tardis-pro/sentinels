@@ -33,7 +33,7 @@ export async function createWebhookTables(): Promise<void> {
   await connectDb();
 
   await client.query(`
-    -- Webhook configurations
+    -- Webhook configurations (compatible with service.ts and db.ts)
     CREATE TABLE IF NOT EXISTS webhook_configs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
@@ -42,27 +42,44 @@ export async function createWebhookTables(): Promise<void> {
       url TEXT NOT NULL,
       secret TEXT NOT NULL,
       enabled BOOLEAN DEFAULT true,
+      name TEXT,
+      description TEXT,
+      endpoint_url TEXT,
+      event_types TEXT[] DEFAULT '{}',
+      is_active BOOLEAN DEFAULT true,
+      retry_count INT DEFAULT 3,
+      retry_delay_seconds INT DEFAULT 60,
+      timeout_seconds INT DEFAULT 30,
+      created_by TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_webhook_configs_project ON webhook_configs(project_id);
 
-    -- Webhook delivery history
+    -- Webhook delivery history (compatible with service.ts and db.ts)
     CREATE TABLE IF NOT EXISTS webhook_deliveries (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       webhook_id UUID REFERENCES webhook_configs(id) ON DELETE CASCADE,
+      webhook_config_id UUID REFERENCES webhook_configs(id) ON DELETE CASCADE,
       event TEXT NOT NULL,
+      event_type TEXT,
       payload JSONB NOT NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'pending',
       response_code INT,
+      response_status INT,
+      response_headers JSONB,
       response_body TEXT,
       attempts INT DEFAULT 0,
+      error_message TEXT,
+      next_retry_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      delivered_at TIMESTAMPTZ
+      delivered_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ
     );
 
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook ON webhook_deliveries(webhook_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_config ON webhook_deliveries(webhook_config_id);
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
 
     -- Scan triggers
@@ -97,6 +114,24 @@ export async function createWebhookTables(): Promise<void> {
     );
 
     CREATE INDEX IF NOT EXISTS idx_git_provider_configs_project ON git_provider_configs(project_id);
+
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_git_provider_configs_project_provider'
+      ) THEN
+        ALTER TABLE git_provider_configs
+        ADD CONSTRAINT uq_git_provider_configs_project_provider UNIQUE (project_id, provider);
+      END IF;
+    END $$;
+
+    ALTER TABLE webhook_configs ALTER COLUMN provider DROP NOT NULL;
+    ALTER TABLE webhook_configs ALTER COLUMN events DROP NOT NULL;
+    ALTER TABLE webhook_configs ALTER COLUMN url DROP NOT NULL;
+    ALTER TABLE webhook_configs ALTER COLUMN secret DROP NOT NULL;
+
+    ALTER TABLE webhook_deliveries ALTER COLUMN webhook_id DROP NOT NULL;
+    ALTER TABLE webhook_deliveries ALTER COLUMN event DROP NOT NULL;
   `);
 
   console.log('Webhook tables created successfully');

@@ -3,16 +3,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createGitProviderClient } from './index';
 import { 
   createWebhookConfig, 
-  getWebhookConfigs, 
   updateWebhookConfig, 
   deleteWebhookConfig,
-  createScanTrigger,
-  getPendingTriggers,
-  updateScanTriggerStatus,
-  saveGitProviderConfig,
-  getGitProviderConfig,
-  decryptSecret,
-  encryptSecret,
   processGitHubWebhook,
   deliverWebhook,
   listWebhookConfigs,
@@ -23,6 +15,14 @@ import {
   getInstallationRepos,
   connectWebhooksDb,
 } from './service';
+import {
+  createWebhookTables,
+  createScanTrigger,
+  getPendingTriggers,
+  updateScanTriggerStatus,
+  saveGitProviderConfig,
+  getGitProviderConfig,
+} from './db';
 import { WebhookDelivery, ScanTrigger } from './types';
 import { scannerQueue } from '../queue';
 import { getProjectById, createScan, createScanRun } from '../db';
@@ -81,6 +81,7 @@ interface GitHubWebhookHeaders {
 export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   // Ensure database connection
   fastify.addHook('onReady', async () => {
+    await createWebhookTables();
     await connectWebhooksDb();
   });
 
@@ -324,21 +325,27 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   // ============================================
 
   fastify.get('/scan-triggers', async (request, reply) => {
-    const { projectId, status } = request.query as { projectId?: string; status?: string };
+    const { projectId } = request.query as { projectId?: string; status?: string };
     const triggers = await getPendingTriggers(projectId);
     reply.send(triggers);
   });
 
   fastify.patch('/scan-triggers/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const { status, startedAt, completedAt } = request.body as { status?: string; startedAt?: Date; completedAt?: Date };
-    await updateScanTriggerStatus(id, status, startedAt, completedAt);
+    const body = request.body as { status?: string; startedAt?: Date; completedAt?: Date };
+    const { status, startedAt, completedAt } = body;
+    if (!status) {
+      reply.status(400).send({ error: 'Missing required field: status' });
+      return;
+    }
+    const nextStatus: string = status;
+    await updateScanTriggerStatus(id, nextStatus, startedAt, completedAt);
     reply.send({ message: 'Trigger updated' });
   });
 
   // Trigger a scan manually or via webhook
   fastify.post('/scans/trigger', async (request, reply) => {
-    const body = request.body as { projectId?: string; scanners?: string[]; triggerType?: string; source?: string; branch?: string; commitSha?: string; prNumber?: number };
+    const body = request.body as { projectId?: string; scanners?: SupportedScanner[]; triggerType?: string; source?: string; branch?: string; commitSha?: string; prNumber?: number };
     const { projectId, scanners, triggerType, source, branch, commitSha, prNumber } = body;
 
     if (!projectId || !scanners?.length) {
@@ -367,9 +374,9 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
       return;
     }
 
-    const scanRecord = await createScan(projectId, scanners as SupportedScanner[]);
+    const scanRecord = await createScan(projectId, scanners);
 
-    for (const scannerType of scanners) {
+    for (const scannerType of scanners as SupportedScanner[]) {
       const run = await createScanRun(scanRecord.id, scannerType);
       await scannerQueue.add('scan-job', {
         scanId: scanRecord.id,

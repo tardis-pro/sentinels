@@ -7,6 +7,9 @@ const DEFAULT_IGNORE_PATTERNS = [
   '*.gz', '*.zip', '*.tar', '*.bz2', '*.xz', '*.7z', '*.rar',
   // Images
   '*.png', '*.jpg', '*.jpeg', '*.gif', '*.bmp', '*.ico', '*.webp', '*.svg',
+  // Video/audio media
+  '*.mp4', '*.mov', '*.mkv', '*.avi', '*.wmv', '*.flv', '*.webm', '*.m4v', '*.mpg', '*.mpeg',
+  '*.mp3', '*.wav', '*.aac', '*.ogg', '*.flac', '*.m4a',
   // Data files
   '*.csv', '*.parquet', '*.mat', '*.sav', '*.pkl', '*.pickle', '*.npy', '*.npz',
   '*.h5', '*.hdf5', '*.nc', '*.zarr',

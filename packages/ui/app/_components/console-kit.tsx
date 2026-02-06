@@ -42,9 +42,25 @@ export async function requestJson<T = unknown>(path: string): Promise<FetchResul
 }
 
 export async function postJson(path: string, body?: unknown): Promise<FetchResult> {
+  return mutateJson('POST', path, body);
+}
+
+export async function putJson(path: string, body?: unknown): Promise<FetchResult> {
+  return mutateJson('PUT', path, body);
+}
+
+export async function patchJson(path: string, body?: unknown): Promise<FetchResult> {
+  return mutateJson('PATCH', path, body);
+}
+
+export async function deleteJson(path: string): Promise<FetchResult> {
+  return mutateJson('DELETE', path);
+}
+
+async function mutateJson(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<FetchResult> {
   try {
     const res = await fetch(`${API_URL}${path}`, {
-      method: 'POST',
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });

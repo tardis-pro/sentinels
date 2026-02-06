@@ -1,5 +1,4 @@
 import { client, connectDb } from '../db';
-import { Client } from 'pg';
 
 // Database extensions for AI analysis
 export async function createAITables(): Promise<void> {
@@ -24,23 +23,6 @@ export async function createAITables(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_ai_analyses_fingerprint ON ai_analyses(fingerprint);
     CREATE INDEX IF NOT EXISTS idx_ai_analyses_finding ON ai_analyses(finding_rule_id, finding_file);
     CREATE INDEX IF NOT EXISTS idx_ai_analyses_severity ON ai_analyses(severity);
-
-    -- Finding embeddings for similarity search (requires pgvector extension)
-    CREATE EXTENSION IF NOT EXISTS vector;
-
-    CREATE TABLE IF NOT EXISTS finding_embeddings (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      finding_id UUID REFERENCES findings(id) ON DELETE CASCADE,
-      embedding vector(768),
-      title_embedding vector(768),
-      description_embedding vector(768),
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Create index for similarity search
-    CREATE INDEX IF NOT EXISTS idx_finding_embeddings ON finding_embeddings 
-      USING ivfflat (embedding vector_cosine_ops) 
-      WITH (lists = 100);
 
     -- AI chat sessions for conversational remediation
     CREATE TABLE IF NOT EXISTS ai_chat_sessions (
@@ -69,6 +51,27 @@ export async function createAITables(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_ai_feedback_analysis ON ai_feedback(analysis_id);
   `);
+
+  try {
+    await client.query(`
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+      CREATE TABLE IF NOT EXISTS finding_embeddings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        finding_id UUID REFERENCES findings(id) ON DELETE CASCADE,
+        embedding vector(768),
+        title_embedding vector(768),
+        description_embedding vector(768),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_finding_embeddings ON finding_embeddings
+        USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+    `);
+  } catch (error) {
+    console.warn(`pgvector extension unavailable, skipping embedding tables: ${String(error)}`);
+  }
   
   console.log('AI tables created successfully');
 }

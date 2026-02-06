@@ -1,4 +1,9 @@
 import { GitProvider, GitProviderConfig, CommitStatus, PRComment } from './types';
+import { GitHubClient } from './providers/github';
+import { GitLabClient } from './providers/gitlab';
+import { BitbucketClient } from './providers/bitbucket';
+
+export type { GitProvider, GitProviderConfig, CommitStatus, PRComment } from './types';
 
 export interface GitProviderClient {
   provider: GitProvider;
@@ -35,9 +40,7 @@ export interface GitProviderClient {
   getCommit(repo: string, sha: string): Promise<any>;
 }
 
-export { GitHubClient } from './providers/github';
-export { GitLabClient } from './providers/gitlab';
-export { BitbucketClient } from './providers/bitbucket';
+export { GitHubClient, GitLabClient, BitbucketClient };
 
 export function createGitProviderClient(config: GitProviderConfig): GitProviderClient {
   switch (config.provider) {
