@@ -1,340 +1,290 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import {
-  Shield, TrendingUp, AlertTriangle, CheckCircle, Clock,
-  BarChart3, PieChart, Activity, FileText, Download, RefreshCw
-} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { ArrowRight, RefreshCw } from 'lucide-react';
+import { ApiCard, ConsoleShell, FetchResult, isUuid, postJson, requestJson } from '../_components/console-kit';
 import { cn } from '@/lib/utils';
 
-interface AnalyticsSummary {
-  totalProjects: number;
-  totalScans: number;
-  totalFindings: number;
-  criticalCount: number;
-  highCount: number;
-  mediumCount: number;
-  lowCount: number;
-  securityPostureScore: number;
-}
+type Project = { id: string; name: string; path: string };
 
-interface TrendDataPoint {
-  date: string;
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  total: number;
-}
+type DashboardData = {
+  capabilities: FetchResult;
+  projects: FetchResult<Project[]>;
+  findings: FetchResult;
+  scans: FetchResult;
+  gitProvider: FetchResult;
+  analyticsSummary: FetchResult;
+  trends: FetchResult;
+  analyticsProjects: FetchResult;
+  scannerPerformance: FetchResult;
+  analyticsCompliance: FetchResult;
+  postureHistory: FetchResult;
+  findingDensity: FetchResult;
+  remediationVelocity: FetchResult;
+  policies: FetchResult;
+  policyStats: FetchResult;
+  frameworks: FetchResult;
+  webhooks: FetchResult;
+  webhookStats: FetchResult;
+  scanTriggers: FetchResult;
+  aiStatus: FetchResult;
+  users: FetchResult;
+  teams: FetchResult;
+  collaborationStats: FetchResult;
+  slaConfigs: FetchResult;
+  riskPending: FetchResult;
+  issueTrackers: FetchResult;
+};
 
-interface ProjectScore {
-  projectId: string;
-  projectName: string;
-  securityScore: number;
-  totalFindings: number;
-  criticalCount: number;
-  highCount: number;
-  lastFindingAt: string | null;
-}
+const initialData: DashboardData = {
+  capabilities: { ok: false, data: null, error: null },
+  projects: { ok: false, data: null, error: null },
+  findings: { ok: false, data: null, error: null },
+  scans: { ok: false, data: null, error: null },
+  gitProvider: { ok: false, data: null, error: null },
+  analyticsSummary: { ok: false, data: null, error: null },
+  trends: { ok: false, data: null, error: null },
+  analyticsProjects: { ok: false, data: null, error: null },
+  scannerPerformance: { ok: false, data: null, error: null },
+  analyticsCompliance: { ok: false, data: null, error: null },
+  postureHistory: { ok: false, data: null, error: null },
+  findingDensity: { ok: false, data: null, error: null },
+  remediationVelocity: { ok: false, data: null, error: null },
+  policies: { ok: false, data: null, error: null },
+  policyStats: { ok: false, data: null, error: null },
+  frameworks: { ok: false, data: null, error: null },
+  webhooks: { ok: false, data: null, error: null },
+  webhookStats: { ok: false, data: null, error: null },
+  scanTriggers: { ok: false, data: null, error: null },
+  aiStatus: { ok: false, data: null, error: null },
+  users: { ok: false, data: null, error: null },
+  teams: { ok: false, data: null, error: null },
+  collaborationStats: { ok: false, data: null, error: null },
+  slaConfigs: { ok: false, data: null, error: null },
+  riskPending: { ok: false, data: null, error: null },
+  issueTrackers: { ok: false, data: null, error: null },
+};
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+const DOMAIN_LINKS = [
+  { href: '/policies', title: 'Policy Studio', description: 'Lifecycle, templates, frameworks, and policy metrics.' },
+  { href: '/webhooks', title: 'Webhook Ops', description: 'Delivery health, trigger queues, and Git provider plumbing.' },
+  { href: '/ai', title: 'AI Center', description: 'Provider status, readiness, and AI triage surfaces.' },
+  { href: '/collaboration', title: 'Collaboration Hub', description: 'Org-scoped teams, SLA, and risk workflows.' },
+];
 
-export default function AnalyticsDashboard() {
-  const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [trends, setTrends] = useState<TrendDataPoint[]>([]);
-  const [projectScores, setProjectScores] = useState<ProjectScore[]>([]);
+export default function IntegratedApiConsole() {
   const [loading, setLoading] = useState(true);
-  const [selectedPeriod, setSelectedPeriod] = useState<'day' | 'week' | 'month'>('day');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [orgId, setOrgId] = useState('');
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [data, setData] = useState<DashboardData>(initialData);
 
-  const fetchAnalytics = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
-    try {
-      const [summaryRes, trendsRes, projectsRes] = await Promise.all([
-        fetch(`${API_URL}/api/analytics/summary`),
-        fetch(`${API_URL}/api/analytics/trends?interval=${selectedPeriod}`),
-        fetch(`${API_URL}/api/analytics/projects?limit=10`),
-      ]);
-
-      if (summaryRes.ok) setSummary(await summaryRes.json());
-      if (trendsRes.ok) setTrends(await trendsRes.json());
-      if (projectsRes.ok) setProjectScores(await projectsRes.json());
-    } catch (error) {
-      console.error('Failed to fetch analytics:', error);
-    } finally {
-      setLoading(false);
+    const projects = await requestJson<Project[]>('/projects');
+    const activeProject = selectedProjectId || projects.data?.[0]?.id || '';
+    if (!selectedProjectId && activeProject) {
+      setSelectedProjectId(activeProject);
     }
-  }, [selectedPeriod]);
+    const validOrgId = isUuid(orgId) ? orgId : '';
+
+    const [
+      capabilities,
+      findings,
+      scans,
+      gitProvider,
+      analyticsSummary,
+      trends,
+      analyticsProjects,
+      scannerPerformance,
+      analyticsCompliance,
+      postureHistory,
+      findingDensity,
+      remediationVelocity,
+      policies,
+      policyStats,
+      frameworks,
+      webhooks,
+      webhookStats,
+      scanTriggers,
+      aiStatus,
+      users,
+      teams,
+      collaborationStats,
+      slaConfigs,
+      riskPending,
+      issueTrackers,
+    ] = await Promise.all([
+      requestJson('/_capabilities'),
+      requestJson('/findings'),
+      activeProject ? requestJson(`/projects/${activeProject}/scans`) : Promise.resolve({ ok: false, data: null, error: null } as FetchResult),
+      activeProject ? requestJson(`/projects/${activeProject}/git/provider`) : Promise.resolve({ ok: false, data: null, error: null } as FetchResult),
+      requestJson('/analytics/summary'),
+      requestJson('/analytics/trends?interval=week'),
+      requestJson('/analytics/projects?limit=6'),
+      requestJson('/analytics/scanners'),
+      requestJson('/analytics/compliance?framework=OWASP%20Top%2010'),
+      requestJson('/analytics/posture-history?days=30'),
+      requestJson('/analytics/finding-density'),
+      requestJson('/analytics/remediation-velocity?days=30'),
+      requestJson('/policies'),
+      requestJson('/policies/statistics'),
+      requestJson('/policies/compliance/frameworks'),
+      requestJson('/webhooks'),
+      requestJson('/webhooks/stats'),
+      requestJson('/scan-triggers'),
+      requestJson('/ai/status'),
+      requestJson('/users'),
+      validOrgId ? requestJson(`/teams?orgId=${encodeURIComponent(validOrgId)}`) : requestJson('/teams'),
+      validOrgId
+        ? requestJson(`/collaboration/stats?orgId=${encodeURIComponent(validOrgId)}`)
+        : Promise.resolve({ ok: true, data: { note: 'Provide valid orgId UUID' }, error: null } as FetchResult),
+      validOrgId
+        ? requestJson(`/sla?orgId=${encodeURIComponent(validOrgId)}`)
+        : Promise.resolve({ ok: true, data: { note: 'Provide valid orgId UUID' }, error: null } as FetchResult),
+      validOrgId
+        ? requestJson(`/risk-acceptance/pending?orgId=${encodeURIComponent(validOrgId)}`)
+        : Promise.resolve({ ok: true, data: { note: 'Provide valid orgId UUID' }, error: null } as FetchResult),
+      validOrgId
+        ? requestJson(`/issue-trackers?orgId=${encodeURIComponent(validOrgId)}`)
+        : Promise.resolve({ ok: true, data: { note: 'Provide valid orgId UUID' }, error: null } as FetchResult),
+    ]);
+
+    setData({
+      capabilities,
+      projects,
+      findings,
+      scans,
+      gitProvider,
+      analyticsSummary,
+      trends,
+      analyticsProjects,
+      scannerPerformance,
+      analyticsCompliance,
+      postureHistory,
+      findingDensity,
+      remediationVelocity,
+      policies,
+      policyStats,
+      frameworks,
+      webhooks,
+      webhookStats,
+      scanTriggers,
+      aiStatus,
+      users,
+      teams,
+      collaborationStats,
+      slaConfigs,
+      riskPending,
+      issueTrackers,
+    });
+    setLoading(false);
+  }, [orgId, selectedProjectId]);
 
   useEffect(() => {
-    fetchAnalytics();
-  }, [fetchAnalytics]);
+    fetchAll();
+  }, [fetchAll]);
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const runMaintenanceAction = async (kind: 'analytics' | 'policies' | 'event') => {
+    setActionMessage(null);
+    const result =
+      kind === 'analytics'
+        ? await postJson('/analytics/refresh')
+        : kind === 'policies'
+          ? await postJson('/policies/templates/seed')
+          : await postJson('/analytics/track', {
+              eventType: 'ui_manual',
+              projectId: selectedProjectId || null,
+              scanId: null,
+              metricName: 'dashboard_refresh',
+              metricValue: 1,
+              dimensions: { source: 'integrated-console' },
+            });
+    setActionMessage(result.ok ? `${kind} action completed` : `${kind} action failed: ${result.error}`);
+    await fetchAll();
   };
 
-  const maxTrendValue = Math.max(...trends.map(t => t.total), 1);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 p-8 flex items-center justify-center">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-indigo-600 mx-auto mb-4" />
-          <p className="text-slate-500">Loading analytics...</p>
-        </div>
-      </div>
-    );
-  }
+  const okCount = Object.values(data).filter((item) => item.ok).length;
+  const totalCount = Object.values(data).length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-8 font-sans">
-      <header className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-indigo-600 rounded-lg">
-            <BarChart3 className="w-6 h-6 text-white" />
+    <ConsoleShell
+      title="Executive Overview"
+      subtitle="One-page health map across all API domains"
+      right={
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-200">
+            Healthy endpoints: {okCount}/{totalCount}
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-indigo-900">Security Analytics</h1>
-            <p className="text-slate-500">Comprehensive security posture overview</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <select
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value as 'day' | 'week' | 'month')}
-            className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            <option value="day">Last 90 Days</option>
-            <option value="week">Last 12 Weeks</option>
-            <option value="month">Last 12 Months</option>
-          </select>
-
           <button
-            onClick={fetchAnalytics}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+            onClick={fetchAll}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-500 bg-slate-800 px-3 py-1.5 text-sm hover:border-slate-300"
           >
-            <RefreshCw className="w-4 h-4" />
-            Refresh
+            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} /> Refresh
           </button>
         </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto space-y-8">
-        {/* Security Posture Score */}
-        <section className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <Shield className="w-5 h-5 text-indigo-500" />
-              <h2 className="text-lg font-bold text-slate-800">Security Posture Score</h2>
-            </div>
-            <span className={cn(
-              "px-3 py-1 rounded-full text-sm font-semibold",
-              summary && summary.securityPostureScore >= 80 ? "bg-emerald-100 text-emerald-700" :
-              summary && summary.securityPostureScore >= 50 ? "bg-amber-100 text-amber-700" :
-              "bg-red-100 text-red-700"
-            )}>
-              {summary ? `${summary.securityPostureScore}%` : 'N/A'}
-            </span>
-          </div>
-
-          {summary && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-4 bg-red-50 rounded-lg border border-red-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle className="w-4 h-4 text-red-500" />
-                  <span className="text-sm font-medium text-red-700">Critical</span>
-                </div>
-                <p className="text-2xl font-bold text-red-800">{summary.criticalCount}</p>
-              </div>
-
-              <div className="p-4 bg-orange-50 rounded-lg border border-orange-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle className="w-4 h-4 text-orange-500" />
-                  <span className="text-sm font-medium text-orange-700">High</span>
-                </div>
-                <p className="text-2xl font-bold text-orange-800">{summary.highCount}</p>
-              </div>
-
-              <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <Clock className="w-4 h-4 text-yellow-500" />
-                  <span className="text-sm font-medium text-yellow-700">Medium</span>
-                </div>
-                <p className="text-2xl font-bold text-yellow-800">{summary.mediumCount}</p>
-              </div>
-
-              <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle className="w-4 h-4 text-blue-500" />
-                  <span className="text-sm font-medium text-blue-700">Low</span>
-                </div>
-                <p className="text-2xl font-bold text-blue-800">{summary.lowCount}</p>
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* Trends Chart */}
-        <section className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <TrendingUp className="w-5 h-5 text-indigo-500" />
-              <h2 className="text-lg font-bold text-slate-800">Finding Trends</h2>
-            </div>
-          </div>
-
-          {trends.length > 0 ? (
-            <div className="h-64 flex items-end gap-1">
-              {trends.map((point, idx) => (
-                <div
-                  key={point.date}
-                  className="flex-1 flex flex-col items-center gap-1"
-                >
-                  <div className="w-full flex flex-col gap-0.5" style={{ height: '200px' }}>
-                    <div
-                      className="w-full bg-red-400 rounded-t"
-                      style={{
-                        height: `${(point.critical / maxTrendValue) * 100}%`,
-                        minHeight: point.critical > 0 ? '4px' : '0',
-                      }}
-                      title={`Critical: ${point.critical}`}
-                    />
-                    <div
-                      className="w-full bg-orange-400"
-                      style={{
-                        height: `${(point.high / maxTrendValue) * 100}%`,
-                        minHeight: point.high > 0 ? '4px' : '0',
-                      }}
-                      title={`High: ${point.high}`}
-                    />
-                    <div
-                      className="w-full bg-yellow-400"
-                      style={{
-                        height: `${(point.medium / maxTrendValue) * 100}%`,
-                        minHeight: point.medium > 0 ? '4px' : '0',
-                      }}
-                      title={`Medium: ${point.medium}`}
-                    />
-                    <div
-                      className="w-full bg-blue-400 rounded-b"
-                      style={{
-                        height: `${(point.low / maxTrendValue) * 100}%`,
-                        minHeight: point.low > 0 ? '4px' : '0',
-                      }}
-                      title={`Low: ${point.low}`}
-                    />
-                  </div>
-                  <span className="text-xs text-slate-400 truncate w-full text-center">
-                    {formatDate(point.date)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="h-64 flex items-center justify-center text-slate-400">
-              No trend data available
-            </div>
-          )}
-
-          {/* Legend */}
-          <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-slate-100">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-red-400 rounded" />
-              <span className="text-sm text-slate-600">Critical</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-orange-400 rounded" />
-              <span className="text-sm text-slate-600">High</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-yellow-400 rounded" />
-              <span className="text-sm text-slate-600">Medium</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-blue-400 rounded" />
-              <span className="text-sm text-slate-600">Low</span>
-            </div>
-          </div>
-        </section>
-
-        {/* Project Scores */}
-        <section className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <Activity className="w-5 h-5 text-indigo-500" />
-              <h2 className="text-lg font-bold text-slate-800">Project Security Scores</h2>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            {projectScores.map((project) => (
-              <div
-                key={project.projectId}
-                className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg border border-slate-100"
-              >
-                <div className="flex-1 min-w-0">
-                  <h3 className="font-semibold text-slate-800 truncate">{project.projectName}</h3>
-                  <div className="flex items-center gap-2 mt-1 text-sm text-slate-500">
-                    <span>{project.totalFindings} findings</span>
-                    {project.criticalCount > 0 && (
-                      <span className="text-red-600">• {project.criticalCount} critical</span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <div className="w-32 h-2 bg-slate-200 rounded-full overflow-hidden">
-                    <div
-                      className={cn(
-                        "h-full rounded-full",
-                        project.securityScore >= 80 ? "bg-emerald-500" :
-                        project.securityScore >= 50 ? "bg-amber-500" : "bg-red-500"
-                      )}
-                      style={{ width: `${project.securityScore}%` }}
-                    />
-                  </div>
-                  <span className={cn(
-                    "text-sm font-bold w-12 text-right",
-                    project.securityScore >= 80 ? "text-emerald-600" :
-                    project.securityScore >= 50 ? "text-amber-600" : "text-red-600"
-                  )}>
-                    {project.securityScore.toFixed(0)}
-                  </span>
-                </div>
-              </div>
+      }
+    >
+      <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-900/65 p-4 md:grid-cols-3">
+        <label className="text-xs text-slate-300">
+          Active project
+          <select
+            value={selectedProjectId}
+            onChange={(e) => setSelectedProjectId(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-2.5 py-2 text-sm"
+          >
+            <option value="">Auto-select</option>
+            {(data.projects.data || []).map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
             ))}
+          </select>
+        </label>
 
-            {projectScores.length === 0 && (
-              <p className="text-center text-slate-400 py-8">No project data available</p>
-            )}
-          </div>
-        </section>
+        <label className="text-xs text-slate-300">
+          Organization id
+          <input
+            value={orgId}
+            onChange={(e) => setOrgId(e.target.value)}
+            placeholder="optional UUID"
+            className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-2.5 py-2 text-sm"
+          />
+        </label>
 
-        {/* Summary Stats */}
-        {summary && (
-          <section className="grid grid-cols-3 gap-4">
-            <div className="bg-white rounded-xl border border-slate-200 p-6 text-center">
-              <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-3xl font-bold text-slate-800">{summary.totalProjects}</p>
-              <p className="text-sm text-slate-500">Total Projects</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <button onClick={() => runMaintenanceAction('analytics')} className="rounded-md border border-sky-400/50 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-200">Refresh analytics</button>
+          <button onClick={() => runMaintenanceAction('policies')} className="rounded-md border border-purple-400/50 bg-purple-500/10 px-3 py-2 text-xs font-semibold text-purple-200">Seed policies</button>
+          <button onClick={() => runMaintenanceAction('event')} className="rounded-md border border-amber-400/50 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200">Track event</button>
+        </div>
+      </section>
+
+      {actionMessage && <p className="text-sm text-slate-300">{actionMessage}</p>}
+
+      <section className="grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
+        {DOMAIN_LINKS.map((item) => (
+          <Link key={item.href} href={item.href} className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 transition hover:border-cyan-300/40 hover:bg-slate-900/80">
+            <p className="text-sm font-semibold text-slate-100">{item.title}</p>
+            <p className="mt-1 text-xs text-slate-400">{item.description}</p>
+            <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-cyan-200">
+              Open workspace <ArrowRight className="h-3.5 w-3.5" />
             </div>
+          </Link>
+        ))}
+      </section>
 
-            <div className="bg-white rounded-xl border border-slate-200 p-6 text-center">
-              <Activity className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-3xl font-bold text-slate-800">{summary.totalScans}</p>
-              <p className="text-sm text-slate-500">Total Scans</p>
-            </div>
-
-            <div className="bg-white rounded-xl border border-slate-200 p-6 text-center">
-              <AlertTriangle className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-3xl font-bold text-slate-800">{summary.totalFindings}</p>
-              <p className="text-sm text-slate-500">Total Findings</p>
-            </div>
-          </section>
-        )}
-      </main>
-    </div>
+      <section className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+        <ApiCard title="Capabilities" result={data.capabilities} />
+        <ApiCard title="Projects" result={data.projects} />
+        <ApiCard title="Findings" result={data.findings} />
+        <ApiCard title="Project Scans" result={data.scans} hint="Depends on selected project" />
+        <ApiCard title="Git Provider" result={data.gitProvider} hint="Depends on selected project" />
+        <ApiCard title="Scan Triggers" result={data.scanTriggers} />
+        <ApiCard title="Analytics Summary" result={data.analyticsSummary} />
+        <ApiCard title="Trend Snapshot" result={data.trends} />
+        <ApiCard title="AI Status" result={data.aiStatus} />
+      </section>
+    </ConsoleShell>
   );
 }

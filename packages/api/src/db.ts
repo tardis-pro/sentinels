@@ -5,9 +5,31 @@ const client = new Client({
     process.env.DATABASE_URL || 'postgres://sentinel:sentinel@localhost:35432/sentinel',
 });
 
+let dbConnected = false;
+let dbConnectPromise: Promise<void> | null = null;
+
 async function connectDb() {
-  await client.connect();
-  console.log('Connected to PostgreSQL');
+  if (dbConnected) {
+    return;
+  }
+
+  if (dbConnectPromise) {
+    await dbConnectPromise;
+    return;
+  }
+
+  dbConnectPromise = client
+    .connect()
+    .then(() => {
+      dbConnected = true;
+      console.log('Connected to PostgreSQL');
+    })
+    .catch((error) => {
+      dbConnectPromise = null;
+      throw error;
+    });
+
+  await dbConnectPromise;
 }
 
 // Ensure the tables are created based on the schema in sentinel_architecture.md
@@ -19,6 +41,7 @@ async function createTables() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name TEXT NOT NULL,
       path TEXT NOT NULL,
+      org_id UUID,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
@@ -47,6 +70,7 @@ async function createTables() {
 
     ALTER TABLE scans ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
     ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS org_id UUID;
 
     CREATE TABLE IF NOT EXISTS findings (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -211,6 +235,18 @@ export async function getFindingsByScanId(scanId: string) {
     [scanId]
   );
   return result.rows;
+}
+
+export async function getProjectPathByScanId(scanId: string): Promise<string | null> {
+  const result = await client.query<{ path: string }>(
+    `SELECT p.path
+     FROM scans s
+     JOIN projects p ON p.id = s.project_id
+     WHERE s.id = $1
+     LIMIT 1`,
+    [scanId]
+  );
+  return result.rows[0]?.path || null;
 }
 
 export async function updateScanStatus(

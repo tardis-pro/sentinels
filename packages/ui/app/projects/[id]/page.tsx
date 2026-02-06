@@ -2,9 +2,21 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { 
-  ArrowLeft, Play, Clock, AlertTriangle, CheckCircle, XCircle, 
-  FileCode, Terminal, Loader2 
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  Boxes,
+  CheckCircle2,
+  Clock3,
+  FileCode2,
+  Loader2,
+  Play,
+  Radar,
+  ShieldAlert,
+  Users,
+  Webhook,
+  XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -45,30 +57,53 @@ interface Finding {
   start_line: number;
   title: string;
   description: string;
+  code_snippet?: string;
+  snippet_start_line?: number;
+  snippet_end_line?: number;
+}
+
+interface Project {
+  id: string;
+  name: string;
+  path: string;
 }
 
 export default function ProjectDetails({ params }: PageProps) {
-  const [project, setProject] = useState<any>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [scans, setScans] = useState<Scan[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
   const [selectedScanners, setSelectedScanners] = useState<string[]>(['trivy', 'semgrep']);
 
-  const formatTimestamp = (value?: string | null) =>
-    value ? new Date(value).toLocaleString() : '—';
+  const formatTimestamp = (value?: string | null) => (value ? new Date(value).toLocaleString() : '--');
 
   const statusTone = (status: string) => {
     switch (status) {
       case 'completed':
-        return 'bg-emerald-50 text-emerald-700 border border-emerald-100';
+        return 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200';
       case 'failed':
-        return 'bg-rose-50 text-rose-700 border border-rose-100';
+        return 'border-red-400/40 bg-red-500/10 text-red-200';
       case 'running':
       case 'queued':
-        return 'bg-amber-50 text-amber-700 border border-amber-100';
+        return 'border-amber-400/40 bg-amber-500/10 text-amber-200';
       default:
-        return 'bg-slate-50 text-slate-700 border border-slate-100';
+        return 'border-slate-500/40 bg-slate-500/10 text-slate-200';
+    }
+  };
+
+  const severityTone = (severity: Finding['severity']) => {
+    switch (severity) {
+      case 'CRITICAL':
+        return 'border-red-400/50 bg-red-500/20 text-red-100';
+      case 'HIGH':
+        return 'border-orange-400/50 bg-orange-500/20 text-orange-100';
+      case 'MEDIUM':
+        return 'border-amber-400/50 bg-amber-500/20 text-amber-100';
+      case 'LOW':
+        return 'border-sky-400/50 bg-sky-500/20 text-sky-100';
+      default:
+        return 'border-slate-400/50 bg-slate-500/20 text-slate-100';
     }
   };
 
@@ -81,33 +116,33 @@ export default function ProjectDetails({ params }: PageProps) {
   ];
 
   const toggleScanner = (id: string) => {
-    setSelectedScanners(prev => 
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
+    setSelectedScanners((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]));
   };
 
   const fetchProjectData = useCallback(async () => {
     try {
-      // 1. Fetch Project Details
       const res = await fetch(`${API_URL}/projects/${params.id}`);
-      const current = await res.json();
-      setProject(current);
+      if (res.ok) {
+        const current = await res.json();
+        setProject(current);
+      } else {
+        setProject({ id: params.id, name: 'Unknown Project', path: params.id });
+      }
 
-      // 2. Fetch Scans for this project
       const scansRes = await fetch(`${API_URL}/projects/${params.id}/scans`);
       const history = await scansRes.json();
       setScans(history);
 
-      // 3. Fetch findings for the most recent scan if available
       if (history.length > 0) {
         const latestScanId = history[0].id;
+        setActiveScanId((current) => current ?? latestScanId);
         const findingsRes = await fetch(`${API_URL}/scans/${latestScanId}/findings`);
         const scanFindings = await findingsRes.json();
         setFindings(scanFindings);
       }
-       
     } catch (e) {
       console.error(e);
+      setProject({ id: params.id, name: 'Unknown Project', path: params.id });
     }
   }, [params.id]);
 
@@ -115,7 +150,6 @@ export default function ProjectDetails({ params }: PageProps) {
     fetchProjectData();
   }, [fetchProjectData]);
 
-  // Polling for scan status
   useEffect(() => {
     if (!activeScanId) return;
 
@@ -126,7 +160,6 @@ export default function ProjectDetails({ params }: PageProps) {
           const scan = await res.json();
           if (scan.status === 'completed' || scan.status === 'failed') {
             setIsScanning(false);
-            // Fetch findings for this scan using the dedicated endpoint
             const fRes = await fetch(`${API_URL}/scans/${activeScanId}/findings`);
             const scanFindings = await fRes.json();
             setFindings(scanFindings);
@@ -134,7 +167,7 @@ export default function ProjectDetails({ params }: PageProps) {
           }
         }
       } catch (e) {
-        console.error("Polling error", e);
+        console.error('Polling error', e);
       }
     }, 2000);
 
@@ -143,7 +176,7 @@ export default function ProjectDetails({ params }: PageProps) {
 
   const triggerScan = async () => {
     if (selectedScanners.length === 0) {
-      alert("Please select at least one scanner.");
+      alert('Please select at least one scanner.');
       return;
     }
     setIsScanning(true);
@@ -153,7 +186,7 @@ export default function ProjectDetails({ params }: PageProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: params.id,
-          scanners: selectedScanners
+          scanners: selectedScanners,
         }),
       });
       const data = await res.json();
@@ -164,226 +197,313 @@ export default function ProjectDetails({ params }: PageProps) {
     }
   };
 
-  if (!project) return <div className="p-10">Loading project...</div>;
+  const severityCounts = findings.reduce(
+    (acc, finding) => {
+      acc[finding.severity] = (acc[finding.severity] || 0) + 1;
+      return acc;
+    },
+    {
+      CRITICAL: 0,
+      HIGH: 0,
+      MEDIUM: 0,
+      LOW: 0,
+      INFO: 0,
+      UNKNOWN: 0,
+    } as Record<Finding['severity'], number>
+  );
+
+  const riskScore = Math.min(
+    100,
+    severityCounts.CRITICAL * 24 + severityCounts.HIGH * 10 + severityCounts.MEDIUM * 5 + severityCounts.LOW * 2
+  );
+  const riskTier = riskScore >= 70 ? 'critical' : riskScore >= 35 ? 'elevated' : 'stable';
+
+  if (!project) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#070a12] px-6 text-slate-100">
+        <div className="inline-flex items-center gap-3 rounded-full border border-red-500/30 bg-red-500/10 px-5 py-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-red-300" />
+          Acquiring threat telemetry...
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
-      <header className="bg-white border-b border-slate-200 px-8 py-4 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link href="/" className="p-2 hover:bg-slate-100 rounded-full transition-colors">
-              <ArrowLeft className="w-5 h-5 text-slate-500" />
+    <div className="relative min-h-screen overflow-hidden bg-[#070a12] text-slate-100">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(239,68,68,0.16),transparent_38%),radial-gradient(circle_at_85%_0%,rgba(56,189,248,0.14),transparent_36%),linear-gradient(180deg,#070a12,#0a1020)]" />
+
+      <header className="sticky top-0 z-20 border-b border-red-500/20 bg-[#090d17]/85 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-5 px-5 py-4 md:px-8">
+          <div className="flex min-w-0 items-center gap-4">
+            <Link
+              href="/"
+              className="rounded-full border border-slate-600/60 bg-slate-800/70 p-2 text-slate-200 transition hover:border-red-400/50 hover:text-red-200"
+            >
+              <ArrowLeft className="h-5 w-5" />
             </Link>
             <div>
-              <h1 className="text-xl font-bold text-slate-900">{project.name}</h1>
-              <p className="text-xs text-slate-500 font-mono">{project.path}</p>
+              <p className="text-[11px] uppercase tracking-[0.22em] text-red-300/80">Threat Command</p>
+              <h1 className="truncate text-xl font-semibold tracking-tight text-slate-100 md:text-2xl">{project.name}</h1>
+              <p className="truncate font-mono text-xs text-slate-400">{project.path}</p>
             </div>
           </div>
-          
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-3 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-              {AVAILABLE_SCANNERS.map(scanner => (
-                <label key={scanner.id} className="flex items-center gap-1.5 text-xs font-medium text-slate-600 cursor-pointer hover:text-indigo-600 transition-colors select-none">
-                  <input 
-                    type="checkbox" 
-                    checked={selectedScanners.includes(scanner.id)}
-                    onChange={() => toggleScanner(scanner.id)}
-                    disabled={isScanning}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
-                  />
-                  {scanner.label}
-                </label>
-              ))}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-center">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-red-200/80">Risk Score</p>
+              <p className="text-xl font-bold text-red-100">{riskScore}</p>
+            </div>
+            <div
+              className={cn(
+                'rounded-xl border px-4 py-2 text-center',
+                riskTier === 'critical'
+                  ? 'border-red-400/40 bg-red-500/10 text-red-200'
+                  : riskTier === 'elevated'
+                    ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+                    : 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+              )}
+            >
+              <p className="text-[10px] uppercase tracking-[0.18em]">Threat Posture</p>
+              <p className="text-sm font-semibold uppercase">{riskTier}</p>
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap gap-2 px-5 pb-3 md:px-8">
+          <Link href="/analytics" className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-cyan-100">
+            <Radar className="h-3.5 w-3.5" /> Overview
+          </Link>
+          <Link href="/policies" className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 hover:border-slate-400">
+            <Boxes className="h-3.5 w-3.5" /> Policies
+          </Link>
+          <Link href="/webhooks" className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 hover:border-slate-400">
+            <Webhook className="h-3.5 w-3.5" /> Webhooks
+          </Link>
+          <Link href="/ai" className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 hover:border-slate-400">
+            <Bot className="h-3.5 w-3.5" /> AI
+          </Link>
+          <Link href="/collaboration" className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 hover:border-slate-400">
+            <Users className="h-3.5 w-3.5" /> Collaboration
+          </Link>
+        </div>
+      </header>
+
+      <main className="relative mx-auto w-full max-w-7xl px-5 py-6 md:px-8 md:py-8">
+        <section className="mb-6 rounded-2xl border border-slate-700/50 bg-slate-900/70 p-4 shadow-[0_0_0_1px_rgba(15,23,42,0.4),0_25px_80px_rgba(2,6,23,0.6)] md:p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl border border-red-400/40 bg-red-500/15 p-2.5">
+                <ShieldAlert className="h-5 w-5 text-red-200" />
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Active Defense Console</p>
+                <p className="text-sm text-slate-200">Select scanners and launch a new sweep.</p>
+              </div>
             </div>
 
             <button
               onClick={triggerScan}
               disabled={isScanning}
               className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-all",
-                isScanning 
-                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
+                'inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition',
+                isScanning
+                  ? 'cursor-not-allowed border-slate-600 bg-slate-800 text-slate-400'
+                  : 'border-red-400/50 bg-red-600/80 text-white hover:bg-red-500'
               )}
             >
               {isScanning ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Scanning...
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Running scan...
                 </>
               ) : (
                 <>
-                  <Play className="w-4 h-4" />
+                  <Play className="h-4 w-4" />
                   Run Analysis
                 </>
               )}
             </button>
           </div>
-        </div>
-      </header>
 
-      <main className="max-w-7xl mx-auto p-8">
-        {/* Status Area */}
-        {activeScanId && (
-           <div className="mb-8 p-4 bg-white border border-indigo-100 rounded-lg shadow-sm flex items-center gap-3">
-             <Terminal className="w-5 h-5 text-indigo-500" />
-             <div className="flex-1">
-               <p className="text-sm font-medium text-slate-900">
-                 Scan ID: <span className="font-mono text-xs text-slate-500">{activeScanId}</span>
-               </p>
-               <p className="text-xs text-slate-500">
-                 {isScanning ? 'Orchestrating scanners...' : 'Scan finished.'}
-               </p>
-             </div>
-           </div>
-        )}
-
-        {/* Scan History */}
-        <section className="mb-10">
-          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-3">
-            <Clock className="w-5 h-5 text-slate-500" />
-            Scan History
-            <span className="bg-slate-200 text-slate-600 text-xs px-2 py-0.5 rounded-full">{scans.length}</span>
-          </h2>
-          {scans.length === 0 ? (
-            <div className="bg-white border border-dashed border-slate-200 rounded-xl p-6 text-sm text-slate-500">
-              No scans recorded yet. Launch your first analysis to populate history.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {scans.map((scan) => (
-                <div
-                  key={scan.id}
+          <div className="flex flex-wrap gap-2">
+            {AVAILABLE_SCANNERS.map((scanner) => {
+              const selected = selectedScanners.includes(scanner.id);
+              return (
+                <label
+                  key={scanner.id}
                   className={cn(
-                    "bg-white rounded-xl border p-4 shadow-sm cursor-pointer transition-all hover:shadow-md",
-                    activeScanId === scan.id
-                      ? "border-indigo-400 ring-2 ring-indigo-100"
-                      : "border-slate-200 hover:border-slate-300"
+                    'inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition',
+                    selected
+                      ? 'border-red-400/50 bg-red-500/15 text-red-100'
+                      : 'border-slate-600 bg-slate-800/70 text-slate-300 hover:border-slate-500'
                   )}
-                  onClick={() => {
-                    setActiveScanId(scan.id);
-                    // Fetch findings for this scan using the dedicated endpoint
-                    fetch(`${API_URL}/scans/${scan.id}/findings`)
-                      .then(res => res.json())
-                      .then(scanFindings => {
-                        setFindings(scanFindings);
-                      });
-                  }}
                 >
-                  <div className="flex items-center justify-between flex-wrap gap-3">
-                    <div>
-                      <p className="text-xs font-mono text-slate-400">Scan ID</p>
-                      <p className="text-sm font-semibold text-slate-900">{scan.id}</p>
-                    </div>
-                    <div className={cn('text-xs px-3 py-1 rounded-full font-semibold', statusTone(scan.status))}>
-                      {scan.status.toUpperCase()}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      Started: {formatTimestamp(scan.started_at || scan.created_at)} · Completed:{' '}
-                      {formatTimestamp(scan.completed_at)}
-                    </div>
-                  </div>
-                  {/* Show scan-level error if present */}
-                  {scan.error_log && (
-                    <div className="mt-3 p-3 bg-rose-50 border border-rose-200 rounded-lg">
-                      <div className="flex items-start gap-2">
-                        <XCircle className="w-4 h-4 text-rose-500 mt-0.5 flex-shrink-0" />
-                        <div>
-                          <p className="text-xs font-semibold text-rose-700">Scan Error</p>
-                          <p className="text-xs text-rose-600 font-mono whitespace-pre-wrap mt-1">{scan.error_log}</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <div className="mt-4 space-y-2">
-                    {scan.runs.length === 0 ? (
-                      <p className="text-xs text-slate-500">No individual scanner data recorded.</p>
-                    ) : (
-                      scan.runs.map((run) => (
-                        <div
-                          key={run.id}
-                          className="text-xs px-3 py-2 bg-slate-50 rounded-lg border border-slate-100"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <span className="font-semibold text-slate-700">{run.scanner_name}</span>
-                              <span className={cn('px-2 py-0.5 rounded-full font-semibold', statusTone(run.status))}>
-                                {run.status.toUpperCase()}
-                              </span>
-                            </div>
-                            <div className="text-slate-500">
-                              Findings: <span className="font-semibold text-slate-700">{run.findings_count ?? 0}</span>
-                            </div>
-                            <div className="text-slate-400">
-                              {formatTimestamp(run.started_at)} → {formatTimestamp(run.completed_at)}
-                            </div>
-                          </div>
-                          {/* Show scanner-specific error if present */}
-                          {run.error_log && (
-                            <div className="mt-2 p-2 bg-rose-50 border border-rose-100 rounded">
-                              <div className="flex items-start gap-2">
-                                <XCircle className="w-3 h-3 text-rose-500 mt-0.5 flex-shrink-0" />
-                                <p className="text-xs text-rose-600 font-mono whitespace-pre-wrap break-all">{run.error_log}</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ))}
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleScanner(scanner.id)}
+                    disabled={isScanning}
+                    className="h-3.5 w-3.5 rounded border-slate-500 bg-slate-900 text-red-500 focus:ring-red-400"
+                  />
+                  {scanner.label}
+                </label>
+              );
+            })}
+          </div>
+
+          {activeScanId && (
+            <div className="mt-4 flex items-start gap-3 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+              <Radar className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <div>
+                <p className="font-medium">
+                  Tracking scan <span className="font-mono text-xs text-sky-200/90">{activeScanId}</span>
+                </p>
+                <p className="text-xs text-sky-100/80">{isScanning ? 'Collectors are still active.' : 'Execution complete. Reviewing telemetry.'}</p>
+              </div>
             </div>
           )}
         </section>
 
-        {/* Findings List */}
-        <div className="space-y-4">
-          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-amber-500" />
-            Security Findings
-            <span className="bg-slate-200 text-slate-600 text-xs px-2 py-0.5 rounded-full">
-              {findings.length}
-            </span>
-          </h2>
+        <section className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-red-200/80">Critical</p>
+            <p className="text-2xl font-semibold text-red-100">{severityCounts.CRITICAL}</p>
+          </div>
+          <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-orange-200/80">High</p>
+            <p className="text-2xl font-semibold text-orange-100">{severityCounts.HIGH}</p>
+          </div>
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-amber-200/80">Medium</p>
+            <p className="text-2xl font-semibold text-amber-100">{severityCounts.MEDIUM}</p>
+          </div>
+          <div className="rounded-xl border border-slate-500/30 bg-slate-500/10 p-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-300/80">Open Findings</p>
+            <p className="text-2xl font-semibold text-slate-100">{findings.length}</p>
+          </div>
+        </section>
 
-          {findings.length === 0 ? (
-            <div className="text-center py-16 bg-white rounded-xl border border-dashed border-slate-200">
-              <CheckCircle className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
-              <p className="text-slate-500">No findings to display yet.</p>
-              <p className="text-xs text-slate-400">Run a scan to detect vulnerabilities.</p>
+        <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
+          <section className="rounded-2xl border border-slate-700/60 bg-slate-900/65 p-4 md:p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <Clock3 className="h-4 w-4 text-slate-300" />
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-200">Scan Timeline</h2>
+              <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{scans.length}</span>
             </div>
-          ) : (
-            <div className="grid gap-3">
-              {findings.map((f) => (
-                <div key={f.id} className="p-4 bg-white rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={cn(
-                          "px-2 py-0.5 text-[10px] font-bold tracking-wider uppercase rounded-sm",
-                          f.severity === 'CRITICAL' ? "bg-red-100 text-red-700" :
-                          f.severity === 'HIGH' ? "bg-orange-100 text-orange-700" :
-                          f.severity === 'MEDIUM' ? "bg-yellow-100 text-yellow-700" :
-                          "bg-blue-100 text-blue-700"
-                        )}>
-                          {f.severity}
-                        </span>
-                        <span className="text-xs font-mono text-slate-400">{f.scanner_name}</span>
-                      </div>
-                      <h3 className="font-semibold text-slate-900">{f.title}</h3>
-                      <p className="text-sm text-slate-600 mt-1 line-clamp-2">{f.description}</p>
-                      
-                      <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 font-mono bg-slate-50 p-1.5 rounded w-fit">
-                        <FileCode className="w-3 h-3" />
-                        {f.file_path}:{f.start_line}
-                      </div>
+
+            {scans.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-600/70 bg-slate-800/40 px-4 py-8 text-center text-sm text-slate-400">
+                No scans yet. Launch your first defense sweep.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {scans.map((scan) => (
+                  <button
+                    key={scan.id}
+                    onClick={() => {
+                      setActiveScanId(scan.id);
+                      fetch(`${API_URL}/scans/${scan.id}/findings`)
+                        .then((res) => res.json())
+                        .then((scanFindings) => {
+                          setFindings(scanFindings);
+                        });
+                    }}
+                    className={cn(
+                      'w-full rounded-xl border p-3 text-left transition',
+                      activeScanId === scan.id
+                        ? 'border-red-400/60 bg-red-500/10 shadow-[0_0_0_1px_rgba(248,113,113,0.35)]'
+                        : 'border-slate-700 bg-slate-800/60 hover:border-slate-500'
+                    )}
+                  >
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="truncate font-mono text-[11px] text-slate-300">{scan.id}</p>
+                      <span className={cn('rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase', statusTone(scan.status))}>
+                        {scan.status}
+                      </span>
                     </div>
-                  </div>
-                </div>
-              ))}
+                    <p className="text-[11px] text-slate-400">
+                      {formatTimestamp(scan.started_at || scan.created_at)} {' -> '} {formatTimestamp(scan.completed_at)}
+                    </p>
+                    {scan.error_log && (
+                      <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-100">
+                        <div className="mb-1 flex items-center gap-1.5 font-semibold">
+                          <XCircle className="h-3.5 w-3.5" />
+                          Scan Error
+                        </div>
+                        <p className="whitespace-pre-wrap font-mono text-[11px] text-red-100/90">{scan.error_log}</p>
+                      </div>
+                    )}
+
+                    <div className="mt-2 space-y-1.5">
+                      {scan.runs.map((run) => (
+                        <div key={run.id} className="rounded-md border border-slate-700/70 bg-slate-900/65 px-2.5 py-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                            <span className="font-semibold uppercase tracking-wide text-slate-200">{run.scanner_name}</span>
+                            <span className={cn('rounded-full border px-2 py-0.5 font-semibold uppercase', statusTone(run.status))}>
+                              {run.status}
+                            </span>
+                            <span className="text-slate-400">Findings: {run.findings_count ?? 0}</span>
+                          </div>
+                          {run.error_log && (
+                            <p className="mt-2 whitespace-pre-wrap break-all font-mono text-[10px] text-red-200">{run.error_log}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-slate-700/60 bg-slate-900/65 p-4 md:p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-300" />
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-200">Security Findings</h2>
+              <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{findings.length}</span>
             </div>
-          )}
+
+            {findings.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/10 px-4 py-10 text-center">
+                <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-emerald-300" />
+                <p className="text-sm font-medium text-emerald-100">No findings in current view.</p>
+                <p className="mt-1 text-xs text-emerald-200/80">Run additional scanners or inspect older scans.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {findings.map((finding) => (
+                  <article key={finding.id} className="rounded-xl border border-slate-700 bg-slate-800/60 p-3.5">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className={cn('rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide', severityTone(finding.severity))}>
+                        {finding.severity}
+                      </span>
+                      <span className="text-[11px] uppercase tracking-wide text-slate-300">{finding.scanner_name}</span>
+                      <span className="font-mono text-[11px] text-slate-400">{finding.rule_id}</span>
+                    </div>
+                    <h3 className="text-sm font-semibold text-slate-100">{finding.title}</h3>
+                    <p className="mt-1 text-sm text-slate-300">{finding.description}</p>
+                    <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-slate-600 bg-slate-900/70 px-2 py-1 font-mono text-[11px] text-slate-300">
+                      <FileCode2 className="h-3.5 w-3.5" />
+                      {finding.file_path}:{finding.start_line}
+                    </div>
+                    {finding.scanner_name === 'sonarqube' && finding.code_snippet && (
+                      <details className="mt-3 rounded-lg border border-slate-700/80 bg-slate-950/60 p-2">
+                        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-cyan-200">
+                          Expand Code In Question
+                        </summary>
+                        <p className="mt-2 text-[11px] text-slate-400">
+                          Lines {finding.snippet_start_line ?? finding.start_line} - {finding.snippet_end_line ?? finding.start_line}
+                        </p>
+                        <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-slate-700 bg-slate-950 p-2 font-mono text-[11px] text-slate-200">
+                          {finding.code_snippet}
+                        </pre>
+                      </details>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </main>
     </div>
